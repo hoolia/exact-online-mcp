@@ -34,13 +34,13 @@ export class FakeExact {
   };
   on(h: Handler) { this.handlers.push(h); return this; }
   /** Standard OAuth + Me handlers. */
-  withLogin(opts: { userId?: string; division?: number; expiresIn?: number } = {}) {
+  withLogin(opts: { userId?: string; division?: number; expiresIn?: number; refreshExpiresIn?: number } = {}) {
     const userId = opts.userId ?? 'a1b2c3d4-0000-0000-0000-000000000001';
     return this.on((url, init) => {
       if (url.pathname === '/api/oauth2/token') {
         const p = new URLSearchParams(String(init.body));
         if (p.get('grant_type') === 'refresh_token') this.refreshCount++;
-        return json({ access_token: `at-${randomBytes(4).toString('hex')}`, refresh_token: `rt-${randomBytes(4).toString('hex')}`, expires_in: opts.expiresIn ?? 600 });
+        return json({ access_token: `at-${randomBytes(4).toString('hex')}`, refresh_token: `rt-${randomBytes(4).toString('hex')}`, expires_in: p.get('grant_type') === 'refresh_token' ? (opts.refreshExpiresIn ?? 600) : (opts.expiresIn ?? 600) });
       }
       if (url.pathname === '/api/v1/current/Me') return json({ d: { results: [{ UserID: userId, FullName: 'Test User', Email: 't@example.nl', CurrentDivision: opts.division ?? 100 }] } });
       return undefined;
@@ -100,3 +100,10 @@ export async function mcpCall(env: TestEnv, accessToken: string, method: string,
 }
 
 export const callTool = (env: TestEnv, token: string, name: string, args: unknown = {}) => mcpCall(env, token, 'tools/call', { name, arguments: args });
+
+export const parseResult = (body: any) => {
+  const text: string = body.result.content[0].text;
+  const i = text.indexOf('\n\n');
+  return { isError: !!body.result.isError, summary: i < 0 ? text : text.slice(0, i), data: i < 0 ? undefined : JSON.parse(text.slice(i + 2)) };
+};
+export const odata = (results: unknown[], next?: string) => json({ d: { results, ...(next ? { __next: next } : {}) } });
