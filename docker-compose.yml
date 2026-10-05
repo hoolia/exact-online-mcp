@@ -1,0 +1,46 @@
+services:
+  app:
+    build: .
+    env_file: .env
+    environment:
+      DB_PATH: /data/connector.db
+    volumes:
+      - connector-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||8080)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    # No published ports: only the tunnel can reach the app.
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN}
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+
+  backup:
+    image: alpine:3.20
+    # Nightly consistent copy of the SQLite DB (keeps 14 days). Copy ./backups off the server too.
+    command: >
+      sh -c "apk add --no-cache sqlite >/dev/null &&
+      while true; do
+        sqlite3 /data/connector.db \".backup '/backups/connector-$$(date +%F).db'\" ;
+        find /backups -name 'connector-*.db' -mtime +14 -delete ;
+        sleep 86400 ;
+      done"
+    volumes:
+      - connector-data:/data
+      - ./backups:/backups
+    restart: unless-stopped
+    depends_on:
+      - app
+
+volumes:
+  connector-data:

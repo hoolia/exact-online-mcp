@@ -4,3 +4,4 @@ dist
 data
 *.db
 cloudflared/*.json
+backups
