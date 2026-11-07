@@ -52,7 +52,7 @@ export function createApp({ cfg, store, log, fetchImpl = fetch, sleep }: AppDeps
     };
   }
 
-  app.post('/mcp', requireBearer, express.json({ limit: '1mb' }), async (req, res) => {
+  app.post('/mcp', requireBearer, express.json({ limit: Math.ceil(cfg.maxAttachmentBytes * 1.4) + 1024 * 1024 }), async (req, res) => {
     const server = createMcpServer(tools, contextFor);
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     res.on('close', () => { void transport.close(); void server.close(); });

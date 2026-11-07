@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { defineTool } from './types.js';
 import { divisionField, fmt, guidField, isoDate, readOnly, round2, topField, totalsByCurrency, totalsText } from './common.js';
-import { and, date, guid } from '../exact/odata.js';
+import { and, date, guid, str } from '../exact/odata.js';
+import { ENTRY_STATUS, entryShape } from './purchase.js';
 import { ExactError } from '../exact/errors.js';
 
 const STATUS: Record<string, number> = { draft: 10, open: 20, processed: 50 };
@@ -56,17 +57,23 @@ export const getSalesInvoice = defineTool({
 export const listPurchaseEntries = defineTool({
   name: 'list_purchase_entries',
   title: 'List purchase entries',
-  description: 'Lists purchase (supplier) invoices/entries, newest first, optionally filtered by entry date range and supplier. For unpaid supplier invoices with ageing use list_open_payables.',
-  inputSchema: { date_from: isoDate('Entry date from (inclusive).').optional(), date_to: isoDate('Entry date to (inclusive).').optional(), supplier_id: guidField('Supplier account GUID.').optional(), division: divisionField, top: topField() },
+  description: 'Lists purchase (supplier) invoice entries, newest first, optionally filtered by entry date range, supplier, status (open = not yet processed, processed, rejected) and supplier invoice number (your_ref). For unpaid supplier invoices with ageing use list_open_payables; for the lines of one entry use get_purchase_entry.',
+  inputSchema: {
+    date_from: isoDate('Entry date from (inclusive).').optional(), date_to: isoDate('Entry date to (inclusive).').optional(),
+    supplier_id: guidField('Supplier account GUID.').optional(),
+    status: z.enum(['open', 'processed', 'rejected']).optional().describe('open = Status 20, not yet processed.'),
+    your_ref: z.string().min(1).max(60).optional().describe("Supplier's invoice number (exact match)."),
+    division: divisionField, top: topField(),
+  },
   annotations: readOnly,
   async run(ctx, a) {
-    const filter = and([a.date_from && `EntryDate ge ${date(a.date_from)}`, a.date_to && `EntryDate le ${date(a.date_to)}`, a.supplier_id && `Supplier eq ${guid(a.supplier_id)}`]);
-    const select = ['EntryID', 'EntryNumber', 'InvoiceNumber', 'Supplier', 'SupplierName', 'EntryDate', 'DueDate', 'AmountDC', 'AmountFC', 'Currency', 'Description', 'Journal', 'Status', 'YourRef'];
+    const filter = and([a.date_from && `EntryDate ge ${date(a.date_from)}`, a.date_to && `EntryDate le ${date(a.date_to)}`, a.supplier_id && `Supplier eq ${guid(a.supplier_id)}`, a.status && `Status eq ${ENTRY_STATUS[a.status]}`, a.your_ref && `YourRef eq ${str(a.your_ref)}`]);
+    const select = ['EntryID', 'EntryNumber', 'InvoiceNumber', 'Supplier', 'SupplierName', 'EntryDate', 'DueDate', 'AmountDC', 'AmountFC', 'VATAmountFC', 'Currency', 'Description', 'Journal', 'Status', 'Type', 'YourRef', 'PaymentReference', 'Document', 'DocumentSubject'];
     const { rows, truncated } = await ctx.exact.list('purchaseentry/PurchaseEntries', { select, filter, orderby: 'EntryDate desc' }, { division: a.division, maxRows: a.top, maxPages: 10 });
     const totals = totalsByCurrency(rows.map((r: any) => ({ amount: r.AmountFC ?? 0, currency: r.Currency ?? '' })));
     return {
       summary: `Found ${rows.length} purchase entr${rows.length === 1 ? 'y' : 'ies'} totalling ${totalsText(totals)}${truncated ? ' (more exist; narrow the filters)' : ''}.`,
-      data: { totals, truncated, entries: rows.map((r: any) => ({ id: r.EntryID, entry_number: r.EntryNumber, invoice_number: r.InvoiceNumber, supplier_id: r.Supplier, supplier_name: r.SupplierName, entry_date: r.EntryDate?.slice(0, 10), due_date: r.DueDate?.slice(0, 10), amount_dc: r.AmountDC, amount_fc: r.AmountFC, currency: r.Currency, description: r.Description, journal: r.Journal, status: r.Status === 5 ? 'rejected' : r.Status === 20 ? 'open' : r.Status === 50 ? 'processed' : r.Status, your_ref: r.YourRef })) },
+      data: { totals, truncated, entries: rows.map(entryShape) },
     };
   },
 });

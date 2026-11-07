@@ -19,6 +19,8 @@ const schema = z.object({
   }),
   SESSION_SIGNING_KEY: z.string().min(32, 'must be at least 32 characters'),
   ENABLE_WRITE_TOOLS: z.enum(['true', 'false']).default('false').transform((v) => v === 'true'),
+  WRITE_TOOLS: z.string().optional(),
+  MAX_ATTACHMENT_MB: z.coerce.number().positive().max(100).default(20),
   ALLOWED_EXACT_USER_IDS: z.string().optional(),
   EXTRA_REDIRECT_URIS: z.string().optional(),
   DB_PATH: z.string().default('/data/connector.db'),
@@ -36,6 +38,9 @@ export interface Config {
   tokenEncryptionKey: Buffer;
   sessionSigningKey: string;
   enableWriteTools: boolean;
+  /** write tools to register; empty with enableWriteTools: all of them */
+  writeTools: string[];
+  maxAttachmentBytes: number;
   allowedExactUserIds: string[];
   extraRedirectUris: string[];
   dbPath: string;
@@ -64,7 +69,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     enabledRegions,
     tokenEncryptionKey: Buffer.from(c.TOKEN_ENCRYPTION_KEY, 'base64'),
     sessionSigningKey: c.SESSION_SIGNING_KEY,
-    enableWriteTools: c.ENABLE_WRITE_TOOLS,
+    enableWriteTools: c.ENABLE_WRITE_TOOLS || csv(c.WRITE_TOOLS).length > 0,
+    writeTools: csv(c.WRITE_TOOLS),
+    maxAttachmentBytes: Math.round(c.MAX_ATTACHMENT_MB * 1024 * 1024),
     allowedExactUserIds: csv(c.ALLOWED_EXACT_USER_IDS).map((s) => s.toLowerCase()),
     extraRedirectUris: csv(c.EXTRA_REDIRECT_URIS),
     dbPath: c.DB_PATH,

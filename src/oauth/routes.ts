@@ -155,6 +155,7 @@ export function mountOAuth(app: Express, { cfg, store, log, fetchImpl }: OAuthDe
         { region: pending.region, exactUserId, name: String(me.FullName ?? ''), email: me.Email ?? null, currentDivision: Number(me.CurrentDivision) },
         tokens,
       );
+      log.info({ exactUserId, currentDivision: Number(me.CurrentDivision) }, 'exact login');
       store.deletePending(pending.id);
       const code = randomToken(32);
       store.saveCode(code, { clientId: pending.clientId, redirectUri: pending.redirectUri, codeChallenge: pending.codeChallenge, userId: user.id });

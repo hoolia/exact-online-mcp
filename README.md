@@ -60,7 +60,9 @@ startup; the server refuses to start with a clear message if anything is missing
 | `EXACT_DEFAULT_REGION` / `EXACT_ENABLED_REGIONS` | Regions (`nl be de uk fr es us`). With one enabled region users skip the region page. |
 | `ALLOWED_EXACT_USER_IDS` | Optional comma-separated Exact `UserID` GUIDs; empty = anyone who can log in to Exact. Rejected attempts are logged with the user id. |
 | `EXTRA_REDIRECT_URIS` | Extra allowed OAuth redirect URIs. Built in: `https://claude.ai/api/mcp/auth_callback`, `https://claude.com/api/mcp/auth_callback`, `http://localhost:*`, `http://127.0.0.1:*`. |
-| `ENABLE_WRITE_TOOLS` | `true` registers the write tools (see TOOLS.md). |
+| `ENABLE_WRITE_TOOLS` | `true` registers every write tool (see TOOLS.md). |
+| `WRITE_TOOLS` | Comma-separated write tool names to register instead of all of them, e.g. `draft_purchase_entry,attach_document`; an unknown name stops the server at startup. |
+| `MAX_ATTACHMENT_MB` | Largest file `attach_document` accepts (default 20). |
 
 ## 3. Deploy (Cloudflare Tunnel)
 
@@ -81,6 +83,14 @@ and a healthcheck on `/healthz`.
 (Cloudflare WAF IP rule). `/authorize` and `/exact/callback` are hit by the user's browser and must stay open.
 
 **Rate limiting:** `/authorize`, `/token`, `/register`, `/exact/*` are limited to 60 requests/minute per IP (the app trusts one proxy hop).
+
+## 3b. Deploy on Kubernetes / OpenShift
+
+The image `ghcr.io/hoolia/exact-online-mcp:<version>` (built from `Containerfile` by `.github/workflows/image.yaml`) runs as any
+non-root UID in group 0 and writes only `DB_PATH` (default `/data/connector.db`): mount a ReadWriteOnce volume on `/data` and run
+one replica with the `Recreate` strategy. Publish `/` of the Service on an HTTPS Route or Ingress on the host of `PUBLIC_BASE_URL`;
+the server trusts one proxy hop for the client address. Give the secrets (`EXACT_CLIENT_SECRET`, `TOKEN_ENCRYPTION_KEY`,
+`SESSION_SIGNING_KEY`) from a Secret. A login logs the Exact `UserID` (`exact login`), which `ALLOWED_EXACT_USER_IDS` takes.
 
 ## 4. Connecting in Claude
 

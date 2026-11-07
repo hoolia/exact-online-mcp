@@ -17,12 +17,17 @@ never silently rounded; totals are grouped per currency. Dates are ISO 8601. All
 | `list_open_payables` | `read/financial/PayablesList` | same | same shape |
 | `list_sales_invoices` | `salesinvoice/SalesInvoices` | `date_from`, `date_to`, `status`, `account_id` | newest first |
 | `get_sales_invoice` | `SalesInvoices(guid)` + `SalesInvoiceLines` | `invoice_id` or `invoice_number` | with lines |
-| `list_purchase_entries` | `purchaseentry/PurchaseEntries` | `date_from`, `date_to`, `supplier_id` | |
+| `list_purchase_entries` | `purchaseentry/PurchaseEntries` | `date_from`, `date_to`, `supplier_id`, `status` (open/processed/rejected), `your_ref` | open = Status 20, not processed |
+| `get_purchase_entry` | `PurchaseEntries(guid)` + `PurchaseEntryLines` | `entry_id` or `entry_number` | lines with G/L account and VAT code, linked document |
 | `search_items` | `logistics/Items` | `query`, `sales_items_only` | prices, stock |
 | `list_gl_accounts` | `financial/GLAccounts` | `query` | |
+| `list_vat_codes` | `vat/VATCodes` | `query`, `use` (purchase/sales/any), `include_blocked` | percentage, type, reverse charge |
+| `list_journals` | `financial/Journals` | `kind` (purchase/sales/bank/cash/general/any) | journal codes for write tools |
+| `list_document_types` | `documents/DocumentTypes` | - | ids for `attach_document` |
 | `get_profit_and_loss` | `read/financial/ProfitLossOverview` | – | current vs previous year (YTD and period) |
 | `get_revenue_by_period` | `read/financial/RevenueListByYear` | `year` | revenue per period + total |
 | `list_transactions` | `financialtransaction/TransactionLines` | `date_from`, `date_to` (required), `gl_account_id` and/or `account_id` (one required), `top` (max 200) | debit positive |
+| `list_bank_transaction_lines` | `financialtransaction/BankEntryLines` | `date_from`, `date_to` (required), `account_id`, `gl_account_id`, `description`, `amount_min`, `amount_max`, `top` (max 500) | bank and payment service journals |
 
 ### Example: `list_open_receivables { "min_days_overdue": 30 }`
 
@@ -54,7 +59,7 @@ Found 1 account(s).
 [{"id":"6f1c…","code":"1001","name":"Acme BV","city":"Utrecht","country":"NL","vat_number":"NL123456789B01","is_customer":true,"is_supplier":false,"blocked":false}]
 ```
 
-## Write tools (only when `ENABLE_WRITE_TOOLS=true`)
+## Write tools (only when `ENABLE_WRITE_TOOLS=true`, or the ones `WRITE_TOOLS` names)
 
 All are `destructiveHint: true`, default to **`dry_run: true`** (returns the exact payload, posts nothing), and write an audit-log row
 (user, division, tool, payload SHA-256, Exact id, timestamp) when actually posted. Claude is instructed to show the dry-run to the user
@@ -65,6 +70,8 @@ and obtain confirmation before `dry_run: false`.
 | `create_sales_order` | `salesorder/SalesOrders` | `customer_id`, `lines[{item_id, quantity, unit_price?, description?}]`, `description`, `your_ref`, `order_date`, `delivery_date` |
 | `create_sales_invoice` | `salesinvoice/SalesInvoices` | `customer_id`, `journal`, `lines[… + gl_account_id?]`, `description`, `your_ref`, `invoice_date`. Always a **draft** (Status 10); never sent. |
 | `create_quotation` | `crm/Quotations` | `customer_id`, `lines[…]`, `description`, `quotation_date`, `valid_until` |
+| `draft_purchase_entry` | `purchaseentry/PurchaseEntries` | `supplier_id`, `journal`, `your_ref` (supplier invoice number), `entry_date`, `due_date?`, `description`, `currency?`, `payment_reference?`, `credit_note`, `lines[{gl_account_id, amount (excl. VAT), vat_code?, vat_amount?, description?, cost_center?}]`. Leaves the entry open (Status 20); refuses a second entry with the same supplier and `your_ref`. |
+| `attach_document` | `documents/Documents`, `documents/DocumentAttachments`, `PUT PurchaseEntries(guid)` | `entry_id`, `file_name`, `content_base64` or `file_url` (https), `subject?`, `document_type` (default 20). Adds the file to the entry's document, or creates one for the supplier and links it. |
 
 ### Example: `create_sales_order` (dry run)
 

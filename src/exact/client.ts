@@ -27,6 +27,7 @@ export interface ExactApi {
   list<T = any>(resource: string, q: QueryOptions, o?: ListOptions): Promise<ListResult<T>>;
   getOne<T = any>(resource: string, q: Pick<QueryOptions, 'select'>, o?: { division?: number }): Promise<T | null>;
   post<T = any>(resource: string, body: unknown, o?: { division?: number }): Promise<T>;
+  put(resource: string, body: unknown, o?: { division?: number }): Promise<void>;
 }
 
 export class ExactService {
@@ -187,5 +188,10 @@ class ExactClient implements ExactApi {
     const division = await this.resolveDivision(o.division);
     const j = await this.request(`${apiBase(this.user.region)}/${division}/${resource}`, { method: 'POST', body });
     return convertDates(j?.d) as T;
+  }
+
+  async put(resource: string, body: unknown, o: { division?: number } = {}): Promise<void> {
+    const division = await this.resolveDivision(o.division);
+    await this.request(`${apiBase(this.user.region)}/${division}/${resource}`, { method: 'PUT', body });
   }
 }

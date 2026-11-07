@@ -15,7 +15,7 @@ const store = new Store(cfg.dbPath, cfg.tokenEncryptionKey);
 setInterval(() => store.purgeExpired(), 60 * 60 * 1000).unref();
 
 const server = createApp({ cfg, store, log }).listen(cfg.port, () => {
-  log.info({ port: cfg.port, baseUrl: cfg.publicBaseUrl, writeTools: cfg.enableWriteTools }, 'exact-online-mcp listening');
+  log.info({ port: cfg.port, baseUrl: cfg.publicBaseUrl, writeTools: cfg.enableWriteTools ? (cfg.writeTools.length ? cfg.writeTools : 'all') : 'none' }, 'exact-online-mcp listening');
 });
 for (const sig of ['SIGTERM', 'SIGINT'] as const) {
   process.on(sig, () => server.close(() => process.exit(0)));
