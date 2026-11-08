@@ -153,8 +153,9 @@ Exact account. Reconnect from the same place if Exact access expires or is revok
   the last Exact response, Exact id, model version header. Arguments and tokens are never stored. The server never deletes audit
   rows; keep them for the statutory retention period (7 years in the Netherlands) and grant the application role no `DELETE`
   on `audit_log` once migrated.
-* **Approval tokens:** `npm run approval-token -- --entry <draftId> --tier approve|two-step --approver <id> [--answer <text>] [--hours 24]`
-  with `APPROVAL_SIGNING_KEY` in the environment prints a token for `process_entry` or `create_matchset`. An approval service
+* **Approval tokens:** `npm run approval-token -- --entry <draftId> --tier approve|two-step --approver <id> [--channel <ch>] [--answer <text>] [--hours 24]`
+  with `APPROVAL_SIGNING_KEY` in the environment prints a token for `process_entry` or `create_matchset`; a two-step token
+  needs `--channel`. An approval service
   that holds the key issues them by the format and test vector in TOOLS.md (*Approval token format*).
 * **Updates:** `git pull && docker compose up -d --build`.
 

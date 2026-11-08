@@ -73,6 +73,7 @@ async function start(over: Record<string, string> = {}) {
 
 const call = async (token: string, tool: string, args: unknown) => { const r = await callTool(env, token, tool, args); if (!r.body?.result) throw new Error(`${r.status} ${JSON.stringify(r.body)}`); return parseResult(r.body); };
 const approval = (entry: string, approver: string, tier: 'approve' | 'two_step' = 'approve', expSec = T0 / 1000 + 86_400, answer?: string) => mintApproval(KEY, { entry, tier, approver, exp: expSec, answer });
+const twoStep = (entry: string, approver: string, ch: string, iatSec = T0 / 1000) => mintApproval(KEY, { entry, tier: 'two_step', approver, ch, iat: iatSec, exp: iatSec + 72 * 3600 });
 
 describe('registration', () => {
   it('without a ledger the ledger tools stay disabled', async () => {
@@ -369,12 +370,14 @@ describe('process_entry', () => {
     expect((await call(token, 'process_entry', { entry_id: ENTRY, answer: YES, approval_tokens: [approval(ENTRY2, 'alice')] })).data.problems.join()).toContain('another draft');
     expect((await call(token, 'process_entry', { entry_id: ENTRY, answer: YES, approval_tokens: ['not-a-token-at-all'] })).data.problems.join()).toContain('not a valid');
   });
-  it('two-step tier needs two approvers', async () => {
+  it('two-step tier needs approvals on two channels', async () => {
     const { token } = await drafted({}, purchase({ totals: { net: 5000, vat: 1050, gross: 6050 }, lines: [{ gl_account_id: GL_COST, amount: 5000, vat_code: '2' }] }));
-    expect((await call(token, 'process_entry', { entry_id: ENTRY, answer: YES, approval_tokens: [approval(ENTRY, 'alice', 'two_step')] })).summary).toContain('REFUSED');
+    expect((await call(token, 'process_entry', { entry_id: ENTRY, answer: YES, approval_tokens: [twoStep(ENTRY, 'alice', 'whatsapp')] })).summary).toContain('REFUSED');
     expect((await call(token, 'process_entry', { entry_id: ENTRY, answer: YES, approval_tokens: [approval(ENTRY, 'alice'), approval(ENTRY, 'bob')] })).summary).toContain('REFUSED');
-    const ok = await call(token, 'process_entry', { entry_id: ENTRY, answer: YES, approval_tokens: [approval(ENTRY, 'alice', 'two_step'), approval(ENTRY, 'bob', 'two_step')] });
-    expect(ok.data).toMatchObject({ tier: 'two-step', approvers: ['alice', 'bob'] });
+    const sameChannel = await call(token, 'process_entry', { entry_id: ENTRY, answer: YES, approval_tokens: [twoStep(ENTRY, 'alice', 'whatsapp'), twoStep(ENTRY, 'bob', 'whatsapp')] });
+    expect(sameChannel.data.problems.join()).toContain('repeats channel whatsapp');
+    const ok = await call(token, 'process_entry', { entry_id: ENTRY, answer: YES, approval_tokens: [twoStep(ENTRY, 'alice', 'whatsapp'), twoStep(ENTRY, 'alice', 'tui')] });
+    expect(ok.data).toMatchObject({ tier: 'two-step', approvers: ['alice via whatsapp', 'alice via tui'] });
   });
   it('auto tier: held for 24 h, then released without a token', async () => {
     const { token } = await start();
@@ -409,8 +412,8 @@ describe('create_matchset', () => {
     const dry = await call(token, 'create_matchset', ms);
     expect(dry.data.xml).toContain('<MatchLine finyear="2026" finperiod="11" journal="20" entry="26200003" amountdc="-121.00" />');
     const id = `matchset:${dry.data.matchset_id}`;
-    expect((await call(token, 'create_matchset', { ...ms, dry_run: false, answer: YES, approval_tokens: [approval(id, 'alice', 'two_step')] })).summary).toContain('REFUSED');
-    const ok = await call(token, 'create_matchset', { ...ms, dry_run: false, answer: YES, approval_tokens: [approval(id, 'alice', 'two_step'), approval(id, 'bob', 'two_step')] });
+    expect((await call(token, 'create_matchset', { ...ms, dry_run: false, answer: YES, approval_tokens: [twoStep(id, 'alice', 'whatsapp')] })).summary).toContain('REFUSED');
+    const ok = await call(token, 'create_matchset', { ...ms, dry_run: false, answer: YES, approval_tokens: [twoStep(id, 'alice', 'whatsapp'), twoStep(id, 'alice', 'tui')] });
     expect(ok.isError).toBe(false);
     expect(st.xml).toHaveLength(1);
   });
@@ -418,7 +421,7 @@ describe('create_matchset', () => {
     const { token, st } = await start({ ENABLE_MATCHSETS: 'true' });
     const dry = await call(token, 'create_matchset', ms);
     expect(dry.data).toMatchObject({ approvalRequired: true, tier: 'two-step', draftId: `matchset:${dry.data.matchset_id}` });
-    const args = { ...ms, dry_run: false, draftId: dry.data.draftId, answer: YES, approval_tokens: [approval(dry.data.draftId, 'alice', 'two_step'), approval(dry.data.draftId, 'bob', 'two_step')] };
+    const args = { ...ms, dry_run: false, draftId: dry.data.draftId, answer: YES, approval_tokens: [twoStep(dry.data.draftId, 'alice', 'whatsapp'), twoStep(dry.data.draftId, 'alice', 'tui')] };
     expect((await call(token, 'create_matchset', args)).isError).toBe(false);
     expect((await call(token, 'create_matchset', args)).summary).toContain('already uploaded');
     expect(st.xml).toHaveLength(1);
@@ -431,14 +434,14 @@ describe('create_matchset', () => {
     const { token } = await start({ ENABLE_MATCHSETS: 'true' });
     env.fake.on((url) => (url.pathname === '/docs/XMLUpload.aspx' ? new Response(`<?xml version="1.0"?><eExact>${body}</eExact>`, { status: 200 }) : undefined));
     const dry = await call(token, 'create_matchset', ms);
-    const r = await call(token, 'create_matchset', { ...ms, dry_run: false, answer: YES, approval_tokens: [approval(dry.data.draftId, 'alice', 'two_step'), approval(dry.data.draftId, 'bob', 'two_step')] });
+    const r = await call(token, 'create_matchset', { ...ms, dry_run: false, answer: YES, approval_tokens: [twoStep(dry.data.draftId, 'alice', 'whatsapp'), twoStep(dry.data.draftId, 'alice', 'tui')] });
     expect(r.isError).toBe(true);
     expect(r.summary).toContain('did not create the match set');
   });
   it('uploads once when two approved calls race', async () => {
     const { token, st } = await start({ ENABLE_MATCHSETS: 'true' });
     const dry = await call(token, 'create_matchset', ms);
-    const args = { ...ms, dry_run: false, answer: YES, approval_tokens: [approval(dry.data.draftId, 'alice', 'two_step'), approval(dry.data.draftId, 'bob', 'two_step')] };
+    const args = { ...ms, dry_run: false, answer: YES, approval_tokens: [twoStep(dry.data.draftId, 'alice', 'whatsapp'), twoStep(dry.data.draftId, 'alice', 'tui')] };
     const [a, b] = await Promise.all([call(token, 'create_matchset', args), call(token, 'create_matchset', args)]);
     expect([a, b].filter((r) => !r.isError && !r.data.refused)).toHaveLength(1);
     expect(st.xml).toHaveLength(1);
@@ -448,7 +451,7 @@ describe('create_matchset', () => {
     let fail = true;
     env.fake.on((url) => (url.pathname === '/docs/XMLUpload.aspx' && fail ? new Response('<eExact><Messages><Message type="0"><Description>x</Description></Message></Messages></eExact>', { status: 200 }) : undefined));
     const dry = await call(token, 'create_matchset', ms);
-    const args = { ...ms, dry_run: false, answer: YES, approval_tokens: [approval(dry.data.draftId, 'alice', 'two_step'), approval(dry.data.draftId, 'bob', 'two_step')] };
+    const args = { ...ms, dry_run: false, answer: YES, approval_tokens: [twoStep(dry.data.draftId, 'alice', 'whatsapp'), twoStep(dry.data.draftId, 'alice', 'tui')] };
     expect((await call(token, 'create_matchset', args)).isError).toBe(true);
     fail = false;
     expect((await call(token, 'create_matchset', args)).isError).toBe(false);

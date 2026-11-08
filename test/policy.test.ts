@@ -138,6 +138,7 @@ describe('approval tokens', () => {
   const tok = (approver: string, tier: 'approve' | 'two_step' | 'two-step' = 'approve', entry = 'E1', e = exp, answer?: string) => mintApproval(KEY, { entry, tier, approver, exp: e, answer });
   const check = (tokens: string[], tier: 'approve' | 'two_step' | 'auto' = 'approve', answers = ['ja', 'akkoord']) =>
     checkApprovals(KEY, tokens, { entry: 'e1', tier, drafter: 'jwt:agent', nowMs: NOW, answers });
+  const two = (approver: string, ch?: string, iat: number | null = NOW / 1000 - 3600, entry = 'E1') => mintApproval(KEY, { entry, tier: 'two-step', approver, ch, iat: iat ?? undefined, exp: NOW / 1000 + 3600 });
 
   it('round-trips, accepts the contract tier spelling and rejects tampering or another key', () => {
     const t = tok('alice');
@@ -164,11 +165,34 @@ describe('approval tokens', () => {
     expect(check([tok('jwt:agent')]).problems.join()).toContain('drafter');
     expect(check([tok('alice'), tok('bob')], 'two_step').problems.join()).toContain('tier approve');
   });
-  it('two-step needs two different approvers and two answers', () => {
-    expect(check([tok('alice', 'two_step')], 'two_step').ok).toBe(false);
-    expect(check([tok('alice', 'two_step'), tok('alice', 'two_step')], 'two_step').ok).toBe(false);
-    expect(check([tok('alice', 'two_step'), tok('bob', 'two_step')], 'two_step', ['ja']).ok).toBe(false);
-    expect(check([tok('alice', 'two_step'), tok('bob', 'two_step')], 'two_step')).toMatchObject({ ok: true, approvers: ['alice', 'bob'] });
+  it('two-step needs two approvals on different channels and two answers', () => {
+    expect(check([two('alice', 'whatsapp')], 'two_step').ok).toBe(false);
+    expect(check([two('alice', 'whatsapp'), two('alice', 'WhatsApp ')], 'two_step').problems.join()).toContain('repeats channel whatsapp');
+    expect(check([two('alice', 'whatsapp'), two('bob', 'whatsapp')], 'two_step').problems.join()).toContain('repeats channel whatsapp');
+    expect(check([two('alice', 'whatsapp'), two('alice', 'tui')], 'two_step', ['ja']).ok).toBe(false);
+    expect(check([two('alice', 'whatsapp'), two('alice', 'tui')], 'two_step')).toEqual({ ok: true, approvers: ['alice via whatsapp', 'alice via tui'], problems: [] });
+    expect(check([two('alice', 'whatsapp'), two('bob', 'tui')], 'two_step')).toMatchObject({ ok: true, approvers: ['alice via whatsapp', 'bob via tui'] });
+  });
+  it('two-step refuses tokens without a channel or approval time', () => {
+    expect(check([tok('alice', 'two_step'), tok('bob', 'two_step')], 'two_step').problems.join()).toContain('names no channel');
+    expect(check([two('alice', 'whatsapp', null), two('alice', 'tui')], 'two_step').problems.join()).toContain('no approval time');
+  });
+  it('two-step needs both approvals within 72 h', () => {
+    expect(check([two('alice', 'whatsapp', NOW / 1000 - 72 * 3600), two('alice', 'tui')], 'two_step').ok).toBe(true);
+    expect(check([two('alice', 'whatsapp', NOW / 1000 - 72 * 3600 - 1), two('alice', 'tui')], 'two_step').problems.join()).toContain('more than 72 h ago');
+    expect(check([two('alice', 'whatsapp', NOW / 1000 + 301), two('alice', 'tui')], 'two_step').problems.join()).toContain('in the future');
+  });
+  it('the drafter cannot approve on any channel', () => {
+    expect(check([two('jwt:agent', 'whatsapp'), two('alice', 'tui')], 'two_step').problems.join()).toContain('drafter');
+  });
+  it('approve accepts one token with or without a channel and still counts approvers', () => {
+    expect(check([two('alice', 'whatsapp')])).toMatchObject({ ok: true, approvers: ['alice via whatsapp'] });
+    expect(check([tok('alice'), tok('alice')]).problems.join()).toContain('repeats approver');
+  });
+  it('reads ch and iat and refuses malformed ones', () => {
+    expect(readApproval(KEY, two('Alice', ' TUI '))).toMatchObject({ approver: 'alice', ch: 'tui', iat: NOW / 1000 - 3600 });
+    expect(readApproval(KEY, mintApproval(KEY, { entry: 'E1', tier: 'two-step', approver: 'a', ch: ' ', exp: NOW / 1000 + 60 }))).toBeNull();
+    expect(readApproval(KEY, mintApproval(KEY, { entry: 'E1', tier: 'two-step', approver: 'a', ch: 'tui', iat: 1.5, exp: NOW / 1000 + 60 }))).toBeNull();
   });
   it('auto needs no token', () => expect(check([], 'auto', []).ok).toBe(true));
 });
