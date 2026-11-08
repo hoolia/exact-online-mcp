@@ -134,6 +134,15 @@ describe('draft_purchase_entry', () => {
     expect(r.data.checks.find((c: any) => c.name === check).ok).toBe(false);
     expect(st.posted).toEqual([]);
   });
+  it('rejects amounts with more than two decimals before any call', async () => {
+    const { token, st } = await start();
+    const r = await call(token, 'draft_purchase_entry', { ...purchase({ totals: { net: 100.004, vat: 21, gross: 121.004 }, lines: [{ gl_account_id: GL_COST, amount: 100.004, vat_code: '2' }] }), dry_run: false });
+    expect(r.isError).toBe(true);
+    expect(r.summary).toContain('at most 2 decimals');
+    expect(st.posted).toEqual([]);
+    const ok = await call(token, 'draft_purchase_entry', purchase({ totals: { net: 0.1, vat: 0.02, gross: 0.12 }, lines: [{ gl_account_id: GL_COST, amount: 0.1, vat_code: '2' }] }));
+    expect(ok.summary).toContain('DRY RUN');
+  });
   it('refuses a bad description part', async () => {
     const { token } = await start();
     const r = await call(token, 'draft_purchase_entry', purchase({ description: { supplier: 'Ac|me', period: '2026-11', short: 'x' } }));

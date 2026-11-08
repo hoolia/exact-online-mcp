@@ -98,7 +98,8 @@ answer text exactly as given, and the approval token(s) to `process_entry` (or b
 is empty, contains a separator of the template or a control character is refused. Over `DESCRIPTION_MAX_LENGTH` the server
 shortens `short`, then `supplier`, never `ref`.
 
-**Checks before any write.** A failed check refuses the call (`"refused": true`, every check with its message) and writes nothing.
+**Checks before any write.** A failed check refuses the call (`"refused": true`, every check with its message) and writes nothing. Every amount
+has at most two decimals; an amount with more is rejected as invalid input, so Exact receives the cents the checks compared.
 
 | Check | Purchase | General journal |
 |---|---|---|

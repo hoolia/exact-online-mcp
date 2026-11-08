@@ -19,6 +19,8 @@ const dryRun = z.boolean().default(true).describe('Default true: validates and r
 const writeAnnotations = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true } as const;
 const compact = <T extends object>(o: T) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as T;
 const sha256 = (b: Buffer) => createHash('sha256').update(b).digest('hex');
+// validators compare cents; Exact must receive the same cents, so no sub-cent amounts
+const money = () => z.number().refine((v) => Number.isFinite(v) && Math.abs(v) < 1e12 && Math.abs(Math.round(v * 100) - v * 100) < 1e-6, 'must be an amount with at most 2 decimals');
 const sha256Field = z.string().regex(/^[0-9a-f]{64}$/i, 'must be a hex SHA-256').transform((s) => s.toLowerCase());
 
 const descriptionParts = z.object({
@@ -217,9 +219,9 @@ async function executeDraft(ctx: ToolContext, tool: string, plan: DraftPlan, dry
 
 const purchaseLine = z.object({
   gl_account_id: guidField('Cost or balance G/L account GUID (list_gl_accounts).'),
-  amount: z.number().describe('Line amount EXCLUDING VAT, in the entry currency. Negative on a credit note.'),
+  amount: money().describe('Line amount EXCLUDING VAT, in the entry currency. Negative on a credit note.'),
   vat_code: z.string().min(1).max(8).describe('VAT code (list_vat_codes use=purchase).'),
-  vat_amount: z.number().optional().describe('VAT of the line when it differs from amount times the code percentage (rounding on the invoice).'),
+  vat_amount: money().optional().describe('VAT of the line when it differs from amount times the code percentage (rounding on the invoice).'),
   description: z.string().max(60).optional().describe('Line text; omitted: the entry description.'),
   cost_center: z.string().max(8).optional(),
 });
@@ -236,7 +238,7 @@ export const draftPurchaseEntry = defineTool({
     due_date: isoDate('Due date; omitted: from the payment condition.').optional(),
     description: descriptionParts,
     currency: z.string().length(3).default('EUR').describe('ISO currency code of the invoice.'),
-    totals: z.object({ net: z.number(), vat: z.number(), gross: z.number() }).describe('Invoice totals as printed: net (excl. VAT), VAT, gross. Negative on a credit note.'),
+    totals: z.object({ net: money(), vat: money(), gross: money() }).describe('Invoice totals as printed: net (excl. VAT), VAT, gross. Negative on a credit note.'),
     payment_reference: z.string().max(50).optional().describe('Payment reference (betalingskenmerk) from the invoice.'),
     credit_note: z.boolean().default(false).describe('true: purchase credit note (Type 31).'),
     lines: z.array(purchaseLine).min(1).max(50),
@@ -296,10 +298,10 @@ export const draftPurchaseEntry = defineTool({
 
 const journalLine = z.object({
   gl_account_id: guidField('G/L account GUID (list_gl_accounts).'),
-  debit: z.number().positive().optional().describe('Debit amount (excl. VAT); give debit or credit.'),
-  credit: z.number().positive().optional().describe('Credit amount (excl. VAT); give debit or credit.'),
+  debit: money().refine((v) => v > 0, 'must be positive').optional().describe('Debit amount (excl. VAT); give debit or credit.'),
+  credit: money().refine((v) => v > 0, 'must be positive').optional().describe('Credit amount (excl. VAT); give debit or credit.'),
   vat_code: z.string().min(1).max(8).optional().describe('VAT code, only when the journal has VAT enabled; VAT lines are added by Exact.'),
-  vat_amount: z.number().min(0).optional().describe('VAT of the line (needed with vat_code for the balance check).'),
+  vat_amount: money().refine((v) => v >= 0, 'must not be negative').optional().describe('VAT of the line (needed with vat_code for the balance check).'),
   account_id: guidField('Relation (account) GUID for the line.').optional(),
   cost_center: z.string().max(8).optional(),
   cost_unit: z.string().max(8).optional(),
@@ -530,7 +532,7 @@ export const createMatchset = defineTool({
     account_code: z.string().min(1).max(20).optional().describe('Relation code of the matched items.'),
     lines: z.array(z.object({
       fin_year: z.number().int().min(2000).max(2100), fin_period: z.number().int().min(1).max(13),
-      journal: z.string().min(1).max(10), entry_number: z.number().int().positive(), amount_dc: z.number().describe('Amount in the division currency, signed as in Exact.'),
+      journal: z.string().min(1).max(10), entry_number: z.number().int().positive(), amount_dc: money().describe('Amount in the division currency, signed as in Exact.'),
     })).min(2).max(50),
     draftId: z.string().regex(/^matchset:[0-9a-f]{64}$/).optional().describe('draftId of the dry run; must match the lines.'),
     ...approvalFields,
