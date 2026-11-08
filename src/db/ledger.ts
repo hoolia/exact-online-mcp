@@ -158,6 +158,28 @@ export class PgStore {
     });
   }
 
+  /** Status of a match set upload; null when it was never reserved. */
+  async matchsetStatus(draftId: string): Promise<string | null> {
+    const { rows } = await this.pool.query<{ status: string }>('SELECT status FROM matchset WHERE draft_id = $1', [draftId]);
+    return rows[0]?.status ?? null;
+  }
+
+  /** Reserves a match set upload; DuplicateKeyError when it is uploaded or another call holds it. */
+  async reserveMatchset(m: { draftId: string; division: number; approvers: string[]; createdBy: string; at: Date }) {
+    try {
+      await this.pool.query(`INSERT INTO matchset (draft_id, division, status, approved_by, created_by, created_at) VALUES ($1,$2,'reserved',$3,$4,$5)`,
+        [m.draftId, m.division, JSON.stringify(m.approvers), m.createdBy, m.at.toISOString()]);
+    } catch (e: any) {
+      if (e?.code === '23505' || /duplicate key|unique/i.test(String(e?.message))) throw new DuplicateKeyError();
+      throw e;
+    }
+  }
+
+  async finishMatchset(draftId: string, outcome: 'uploaded' | 'unknown' | 'failed') {
+    if (outcome === 'failed') await this.pool.query(`DELETE FROM matchset WHERE draft_id = $1 AND status = 'reserved'`, [draftId]);
+    else await this.pool.query(`UPDATE matchset SET status = $2 WHERE draft_id = $1 AND status = 'reserved'`, [draftId, outcome]);
+  }
+
   async audit(a: AuditRow) {
     await this.pool.query(
       `INSERT INTO audit_log (ts, caller_kind, caller_id, caller_name, client_id, exact_user_id, division, tool, args_sha256, outcome, exact_status, exact_id, model_version)

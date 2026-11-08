@@ -16,7 +16,7 @@ describe('migrations', () => {
   it('apply once and record their version', async () => {
     const { Pool } = newDb().adapters.createPg();
     const pool = new Pool() as unknown as PoolLike;
-    expect(await migrate(pool)).toEqual(['001_ledger_and_audit']);
+    expect(await migrate(pool)).toEqual(['001_ledger_and_audit', '002_matchset']);
     expect(await migrate(pool)).toEqual([]);
   });
 });

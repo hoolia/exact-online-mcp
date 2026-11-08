@@ -142,7 +142,7 @@ lower case). `process_entry` refuses:
 With `EXACT_PROCESS_MODE=record` it marks the entry released in the ledger and a person processes it in Exact.
 
 **Match sets.** `create_matchset` builds the `MatchSets` XML, refuses lines that do not add up to 0.00, uploads one match set
-once (the audit log holds its draftId) and always needs two answers and two `two-step` tokens for the draftId of the dry run.
+once (the `matchset` table holds its draftId before the upload; a failed upload frees it) and always needs two answers and two `two-step` tokens for the draftId of the dry run.
 Exact answers HTTP 200 also when it refuses: the tool reads every `Message` element and fails on type 0 (error) or 3 (fatal),
 or when no type 2 (success) message is present, listing every message. The `MatchSets` XML topic has no delete, so a match is
 undone in Exact (*Financial > Matching*, unmatch).

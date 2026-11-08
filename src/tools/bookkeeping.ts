@@ -534,6 +534,10 @@ export function xmlMessages(xml: string): XmlMessage[] {
 
 export const xmlFailed = (msgs: XmlMessage[]) => !msgs.length || msgs.some((m) => m.type === 0 || m.type === 3 || Number.isNaN(m.type)) || !msgs.some((m) => m.type === 2);
 
+const matchsetTaken = (status: string) => (status === 'uploaded' ? 'this match set was already uploaded.'
+  : status === 'unknown' ? 'an earlier upload of this match set has an unknown outcome; check the match in Exact.'
+  : 'another call is uploading this match set.');
+
 export const createMatchset = defineTool({
   name: 'create_matchset',
   title: 'Create match set',
@@ -560,8 +564,8 @@ export const createMatchset = defineTool({
     const total = a.lines.filter((l: any) => l.amount_dc > 0).reduce((s: number, l: any) => s + l.amount_dc, 0);
     const preview = { division: div, matchset_id: matchsetId, tier: contractTier('two_step'), checks, xml };
     if (failed(checks).length) return refused(`${failed(checks).map((c) => c.message).join('; ')}.`, preview);
-    const done = await ledger.pool.query(`SELECT ts FROM audit_log WHERE tool = 'create_matchset' AND exact_id = $1 AND outcome = 'ok' LIMIT 1`, [draftId]);
-    if (done.rows.length) return refused('this match set was already uploaded.', { ...preview, duplicate: true });
+    const done = await ledger.matchsetStatus(draftId);
+    if (done) return refused(matchsetTaken(done), { ...preview, duplicate: true, status: done });
     if (a.dry_run) {
       return {
         summary: `DRY RUN (nothing was written in division ${div}). Match set of ${a.lines.length} lines; needs two approvals for ${draftId}.`,
@@ -573,13 +577,24 @@ export const createMatchset = defineTool({
     const { tokens, answers } = approvalInput(a);
     const check = checkApprovals(ctx.config.approvalSigningKey, tokens, { entry: draftId, tier: 'two_step', drafter: ctx.caller.id, nowMs: ctx.now(), answers, answerPolicy: ctx.config.answerPolicy });
     if (!check.ok) return refused(check.problems.join('; ') + '.', { ...preview, problems: check.problems });
+    try {
+      await ledger.reserveMatchset({ draftId, division: div, approvers: check.approvers, createdBy: ctx.caller.id, at: new Date(ctx.now()) });
+    } catch (e) {
+      if (!(e instanceof DuplicateKeyError)) throw e;
+      const status = await ledger.matchsetStatus(draftId);
+      return refused(matchsetTaken(status ?? 'reserved'), { ...preview, duplicate: true, status });
+    }
     let response = '';
     try {
       response = await ctx.exact.postXml('MatchSets', xml, { division: div });
+    } catch (e) {
+      await ledger.finishMatchset(draftId, rejectedByExact(e) ? 'failed' : 'unknown');
+      throw e;
     } finally {
       ctx.audit({ tool: 'create_matchset', division: div, payloadHash: matchsetId, exactId: draftId });
     }
     const messages = xmlMessages(response);
+    await ledger.finishMatchset(draftId, xmlFailed(messages) ? 'failed' : 'uploaded');
     if (xmlFailed(messages)) {
       const why = messages.filter((m) => m.type !== 2).map((m) => `type ${m.type}: ${m.description}`).join('; ') || 'no success message in the response';
       throw new ExactError('api', `Exact Online did not create the match set (${why}).`);

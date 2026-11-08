@@ -435,6 +435,25 @@ describe('create_matchset', () => {
     expect(r.isError).toBe(true);
     expect(r.summary).toContain('did not create the match set');
   });
+  it('uploads once when two approved calls race', async () => {
+    const { token, st } = await start({ ENABLE_MATCHSETS: 'true' });
+    const dry = await call(token, 'create_matchset', ms);
+    const args = { ...ms, dry_run: false, answer: YES, approval_tokens: [approval(dry.data.draftId, 'alice', 'two_step'), approval(dry.data.draftId, 'bob', 'two_step')] };
+    const [a, b] = await Promise.all([call(token, 'create_matchset', args), call(token, 'create_matchset', args)]);
+    expect([a, b].filter((r) => !r.isError && !r.data.refused)).toHaveLength(1);
+    expect(st.xml).toHaveLength(1);
+  });
+  it('frees a match set that Exact refused, so it can be uploaded after a fix', async () => {
+    const { token, st } = await start({ ENABLE_MATCHSETS: 'true' });
+    let fail = true;
+    env.fake.on((url) => (url.pathname === '/docs/XMLUpload.aspx' && fail ? new Response('<eExact><Messages><Message type="0"><Description>x</Description></Message></Messages></eExact>', { status: 200 }) : undefined));
+    const dry = await call(token, 'create_matchset', ms);
+    const args = { ...ms, dry_run: false, answer: YES, approval_tokens: [approval(dry.data.draftId, 'alice', 'two_step'), approval(dry.data.draftId, 'bob', 'two_step')] };
+    expect((await call(token, 'create_matchset', args)).isError).toBe(true);
+    fail = false;
+    expect((await call(token, 'create_matchset', args)).isError).toBe(false);
+    expect(st.xml).toHaveLength(1);
+  });
   it('refuses a draftId that does not match the lines', async () => {
     const { token } = await start({ ENABLE_MATCHSETS: 'true' });
     const r = await call(token, 'create_matchset', { ...ms, dry_run: false, draftId: `matchset:${'0'.repeat(64)}`, answer: YES, approval_tokens: [] });
