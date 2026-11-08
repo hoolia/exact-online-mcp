@@ -45,11 +45,13 @@ describe('ledger', () => {
     expect(await s.findDuplicates({ ...query, amountCents: 12100, entryDate: '2026-11-20' })).toHaveLength(0);
     expect(await s.findDuplicates(query)).toHaveLength(0);
   });
-  it('counts earlier supplier entries without reservations', async () => {
+  it('counts released supplier entries, not reservations or drafts', async () => {
     const s = await memStore();
     const a = await s.reserve(row({ refNorm: '1' }));
     await s.reserve(row({ refNorm: '2' }));
     await s.markDrafted(a, ENTRY, 1);
+    expect(await s.supplierEntryCount(100, SUPPLIER)).toBe(0);
+    await s.markReleased(a, 'approved', ['alice'], new Date());
     expect(await s.supplierEntryCount(100, SUPPLIER)).toBe(1);
   });
   it('releases an entry once', async () => {

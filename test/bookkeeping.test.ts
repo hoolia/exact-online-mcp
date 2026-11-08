@@ -184,10 +184,21 @@ describe('draft_purchase_entry', () => {
     for (let i = 1; i <= 3; i++) {
       const id = await ledger.reserve({ division: 100, kind: 'purchase', supplierId: SUPPLIER, refNorm: `OLD${i}`, journal: '60', entryDate: `2026-0${i}-01`, currency: 'EUR', amountCents: i, pdfSha256: null, tier: 'approve', tierReasons: [], createdBy: 'x', createdAt: new Date(T0), holdUntil: null });
       await ledger.markDrafted(id, `00000000-0000-0000-0000-00000000000${i}`, i);
+      await ledger.markReleased(id, 'approved', ['alice'], new Date(T0));
     }
     const r = await call(token, 'draft_purchase_entry', { ...purchase(), dry_run: false });
     expect(r.data.tier).toBe('auto');
     expect(r.data.hold_until).toBe(new Date(T0 + 24 * 3_600_000).toISOString());
+  });
+  it('does not count drafts that were never approved as supplier history', async () => {
+    const { token } = await start();
+    for (let i = 1; i <= 3; i++) {
+      const id = await ledger.reserve({ division: 100, kind: 'purchase', supplierId: SUPPLIER, refNorm: `OLD${i}`, journal: '60', entryDate: `2026-0${i}-01`, currency: 'EUR', amountCents: i, pdfSha256: null, tier: 'approve', tierReasons: [], createdBy: 'x', createdAt: new Date(T0), holdUntil: null });
+      await ledger.markDrafted(id, `00000000-0000-0000-0000-00000000000${i}`, i);
+    }
+    const r = await call(token, 'draft_purchase_entry', purchase());
+    expect(r.data.tier).toBe('approve');
+    expect(r.data.tier_reasons.join()).toContain('0 earlier entries');
   });
   it('is two-step above 5,000 EUR and for a balance account off the allow-list', async () => {
     const { token } = await start();
@@ -308,6 +319,7 @@ describe('process_entry', () => {
     for (let i = 1; i <= 3; i++) {
       const id = await ledger.reserve({ division: 100, kind: 'purchase', supplierId: SUPPLIER, refNorm: `OLD${i}`, journal: '60', entryDate: `2026-0${i}-01`, currency: 'EUR', amountCents: i, pdfSha256: null, tier: 'approve', tierReasons: [], createdBy: 'x', createdAt: new Date(T0), holdUntil: null });
       await ledger.markDrafted(id, `00000000-0000-0000-0000-00000000000${i}`, i);
+      await ledger.markReleased(id, 'approved', ['alice'], new Date(T0));
     }
     await call(token, 'draft_purchase_entry', { ...purchase(), dry_run: false });
     expect((await call(token, 'process_entry', { entry_id: ENTRY })).summary).toContain('held until');

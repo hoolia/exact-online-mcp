@@ -139,9 +139,9 @@ export class PgStore {
     await this.pool.query('UPDATE ledger SET pdf_sha256 = $2 WHERE id = $1', [id, sha]);
   }
 
-  /** Earlier entries of this supplier the server drafted (reservations excluded). */
+  /** Earlier entries of this supplier that were released (approved or processed); drafts do not count. */
   async supplierEntryCount(division: number, supplierId: string): Promise<number> {
-    const { rows } = await this.pool.query(`SELECT COUNT(*) AS n FROM ledger WHERE division = $1 AND supplier_id = $2 AND status <> 'reserved'`, [division, supplierId.toLowerCase()]);
+    const { rows } = await this.pool.query(`SELECT COUNT(*) AS n FROM ledger WHERE division = $1 AND supplier_id = $2 AND status IN ('approved', 'processed')`, [division, supplierId.toLowerCase()]);
     return Number(rows[0]?.n ?? 0);
   }
 
