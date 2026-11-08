@@ -124,7 +124,7 @@ and a person checks Exact and deletes that ledger row when no entry was created.
 |---|---|---|
 | `auto` | purchase entry in EUR, amount below `TIER_AUTO_MAX_EUR`, no lines of opposite sign, every line `vat_amount` within a cent of amount x code percentage, supplier with `TIER_AUTO_MIN_SUPPLIER_ENTRIES` earlier approved or processed ledger entries, all checks green, no duplicate | nothing, after `TIER_AUTO_HOLD_HOURS` |
 | `approve` | every other purchase and general journal entry | one approval token |
-| `two_step` | match sets, a journal in `TIER_PAYROLL_JOURNALS`, amount above `TIER_TWO_STEP_ABOVE_EUR`, a balance sheet G/L account not in `TIER_BALANCE_ACCOUNT_ALLOWLIST` | two approval tokens from different approvers |
+| `two_step` | match sets, a journal in `TIER_PAYROLL_JOURNALS`, amount above `TIER_TWO_STEP_ABOVE_EUR`, a balance sheet G/L account not in `TIER_BALANCE_ACCOUNT_ALLOWLIST` | two `two-step` approval tokens on different channels, from the same or different approvers, both approved within 72 h |
 
 The amount of a purchase entry is the larger of the absolute gross and the sum of the absolute line amounts plus the absolute
 VAT, so offsetting lines rate on their volume; the amount of a general journal entry is its total debit including VAT.
@@ -134,8 +134,11 @@ entry), after the approver answered; its format is below. `process_entry` refuse
 
 - an answer missing, or one that matches `APPROVAL_ANSWER_REJECT` or does not match `APPROVAL_ANSWER_APPROVE` (defaults: `ja`,
   `yes`, `akkoord`, `ok`, `boek` and similar approve; `nee`, `no`, `stop` and similar reject), one answer per required approval;
-- a token that is expired, valid more than 14 days ahead, for another draft, for a lower tier, repeated (approvers compare
-  case-insensitively), from the caller that drafted the entry, or issued for a different answer than the one given;
+- a token that is expired, valid more than 14 days ahead, for another draft, for a lower tier, from the caller that drafted
+  the entry, or issued for a different answer than the one given;
+- for the approve tier, a repeated approver; for the two-step tier, a token without `ch` or `iat`, an `iat` more than 72 h
+  before the call or more than 5 minutes ahead of the server clock, or a repeated channel (approvers and channels compare
+  case-insensitively);
 - an entry that is no longer open in Exact.
 
 With `EXACT_PROCESS_MODE=record` it marks the entry released in the ledger and a person processes it in Exact.
@@ -155,7 +158,9 @@ A token is `<payload>.<mac>`, both parts base64url (RFC 4648 section 5) without 
 | `v` | integer | `1` |
 | `entry` | string | the draftId, lower case: the Exact entry GUID, or `matchset:<64 hex>` |
 | `tier` | string | `approve` or `two-step` (`two_step` is accepted too); a `two-step` token also satisfies `approve` |
-| `approver` | string | stable id of the person who approved, trimmed, lower case; two-step needs two different ones |
+| `approver` | string | stable id of the person who approved, trimmed, lower case |
+| `ch` | string, optional | the channel the approver answered on (for example `whatsapp` or `tui`), trimmed, lower case; two-step needs it, and its two tokens need two different channels |
+| `iat` | integer, optional | time of the approval in epoch seconds; two-step needs it, at most 72 h before the call |
 | `exp` | integer | expiry in epoch seconds; the server refuses an expired token and one valid more than 14 days ahead |
 | `ans` | string, optional | lower-case hex SHA-256 of the normalised answer; the call must then carry that answer |
 
@@ -163,7 +168,8 @@ Signing procedure:
 
 1. Normalise the answer text: Unicode NFC, every run of whitespace to one space, trim, lower case. `ans` is the hex SHA-256
    of its UTF-8 bytes.
-2. Serialise the payload as JSON in UTF-8, keys in the order of the table, no whitespace, `ans` left out when not used.
+2. Serialise the payload as JSON in UTF-8, keys in the order of the table, no whitespace, an optional field left out when not
+   used.
 3. `payload` = base64url of those bytes.
 4. `mac` = base64url of HMAC-SHA256 with key = the UTF-8 bytes of `APPROVAL_SIGNING_KEY` and message = the ASCII bytes of
    `payload`.
@@ -178,8 +184,14 @@ import base64, hashlib, hmac, json, re, unicodedata
 def b64url(b: bytes) -> str:
     return base64.urlsafe_b64encode(b).rstrip(b"=").decode("ascii")
 
-def approval_token(key: str, entry: str, tier: str, approver: str, exp: int, answer: str | None = None) -> str:
-    payload = {"v": 1, "entry": entry.lower(), "tier": tier, "approver": approver.strip().lower(), "exp": exp}
+def approval_token(key: str, entry: str, tier: str, approver: str, exp: int, answer: str | None = None,
+                   ch: str | None = None, iat: int | None = None) -> str:
+    payload = {"v": 1, "entry": entry.lower(), "tier": tier, "approver": approver.strip().lower()}
+    if ch is not None:
+        payload["ch"] = ch.strip().lower()
+    if iat is not None:
+        payload["iat"] = iat
+    payload["exp"] = exp
     if answer is not None:
         norm = re.sub(r"\s+", " ", unicodedata.normalize("NFC", answer)).strip().lower()
         payload["ans"] = hashlib.sha256(norm.encode("utf-8")).hexdigest()
@@ -203,11 +215,33 @@ Token:
 eyJ2IjoxLCJlbnRyeSI6IjMzMzMzMzMzLTMzMzMtMzMzMy0zMzMzLTMzMzMzMzMzMzMzMyIsInRpZXIiOiJhcHByb3ZlIiwiYXBwcm92ZXIiOiJhbGljZSIsImV4cCI6MTc5NDEzMjAwMCwiYW5zIjoiYzA1N2QyNzdhNTYwODVkNWU5ODgxNjViZTMxYmRkMjdlZjU1MzRjZGQ3ZjMyMzhlZmFiYmY3OGMwNWQ3MjBmYSJ9.ooZVlE-72yRTjYVSsXW7nINfKV4-9lz8wAovLecvOe4
 ```
 
-The same entry, tier `two-step`, approver `alice`, exp `1794132000` and no answer give:
+The same entry, tier `two-step`, approver `alice`, exp `1794132000` and no answer give a token without `ch`, which satisfies
+the approve tier and not the two-step tier:
 
 ```
 eyJ2IjoxLCJlbnRyeSI6IjMzMzMzMzMzLTMzMzMtMzMzMy0zMzMzLTMzMzMzMzMzMzMzMyIsInRpZXIiOiJ0d28tc3RlcCIsImFwcHJvdmVyIjoiYWxpY2UiLCJleHAiOjE3OTQxMzIwMDB9.oqam9uIlIuThpUsZbHXmBC7D6mP_Q9HGskHxC66NKg0
 ```
+
+Two-step test vector: one approver on two channels. Same key, entry and answer, tier `two-step`, approver `alice`, iat
+`1794128400` (2026-11-08T09:00:00Z), exp `1794387600` (iat + 72 h), ch `whatsapp`. Payload JSON:
+
+```
+{"v":1,"entry":"33333333-3333-3333-3333-333333333333","tier":"two-step","approver":"alice","ch":"whatsapp","iat":1794128400,"exp":1794387600,"ans":"c057d277a56085d5e988165be31bdd27ef5534cdd7f3238efabbf78c05d720fa"}
+```
+
+Token:
+
+```
+eyJ2IjoxLCJlbnRyeSI6IjMzMzMzMzMzLTMzMzMtMzMzMy0zMzMzLTMzMzMzMzMzMzMzMyIsInRpZXIiOiJ0d28tc3RlcCIsImFwcHJvdmVyIjoiYWxpY2UiLCJjaCI6IndoYXRzYXBwIiwiaWF0IjoxNzk0MTI4NDAwLCJleHAiOjE3OTQzODc2MDAsImFucyI6ImMwNTdkMjc3YTU2MDg1ZDVlOTg4MTY1YmUzMWJkZDI3ZWY1NTM0Y2RkN2YzMjM4ZWZhYmJmNzhjMDVkNzIwZmEifQ.Yd9yy36zcSNZo0Mk0ZGbIBkOgIQnov9zFr_zlOzI4b0
+```
+
+The same with ch `tui`:
+
+```
+eyJ2IjoxLCJlbnRyeSI6IjMzMzMzMzMzLTMzMzMtMzMzMy0zMzMzLTMzMzMzMzMzMzMzMyIsInRpZXIiOiJ0d28tc3RlcCIsImFwcHJvdmVyIjoiYWxpY2UiLCJjaCI6InR1aSIsImlhdCI6MTc5NDEyODQwMCwiZXhwIjoxNzk0Mzg3NjAwLCJhbnMiOiJjMDU3ZDI3N2E1NjA4NWQ1ZTk4ODE2NWJlMzFiZGQyN2VmNTUzNGNkZDdmMzIzOGVmYWJiZjc4YzA1ZDcyMGZhIn0.UNCZ8HGSWRevDHFi5Q4VCARrzvwipHRhLkWdD7f_I8s
+```
+
+Together, with the answer `boek 33333333-3333-3333-3333-333333333333` twice, they release a two-step draft until exp.
 
 ### Example: `create_sales_order` (dry run)
 

@@ -447,7 +447,7 @@ export const attachDocument = defineTool({
 export const processEntry = defineTool({
   name: 'process_entry',
   title: 'Process (release) a drafted entry',
-  description: 'Releases an entry this server drafted, after enforcing its approval tier: auto entries after their hold time without approval; approve entries with the approver\'s answer and one approval token; two-step entries with two answers and two tokens from different approvers. Give the draftId the draft tool returned, the answer text exactly as the approver gave it, and the token(s) the approval flow issued. The drafter cannot approve their own entry. The entry must still be open (Status 20) in Exact. WRITES.',
+  description: 'Releases an entry this server drafted, after enforcing its approval tier: auto entries after their hold time without approval; approve entries with the approver\'s answer and one approval token; two-step entries with two answers and two tokens approved on two different channels within 72 h, by the same or different approvers. Give the draftId the draft tool returned, the answer text exactly as the approver gave it, and the token(s) the approval flow issued. The drafter cannot approve their own entry. The entry must still be open (Status 20) in Exact. WRITES.',
   inputSchema: {
     draftId: guidField('draftId returned by draft_purchase_entry or draft_general_journal_entry.').optional(),
     entry_id: guidField('Same as draftId (Exact entry GUID).').optional(),
@@ -541,7 +541,7 @@ const matchsetTaken = (status: string) => (status === 'uploaded' ? 'this match s
 export const createMatchset = defineTool({
   name: 'create_matchset',
   title: 'Create match set',
-  description: 'Matches open items on a G/L account (for example a bank line against a purchase invoice) by uploading an Exact XML MatchSet. Always tier two-step: the dry run returns draftId (matchset:<id>); the call with dry_run=false needs the same lines, two approving answers and two approval tokens for that draftId from different approvers. The matched amounts must cancel out, and the same match set is uploaded once. Exact offers no API to undo a match: unmatch in Exact. WRITES to Exact Online.',
+  description: 'Matches open items on a G/L account (for example a bank line against a purchase invoice) by uploading an Exact XML MatchSet. Always tier two-step: the dry run returns draftId (matchset:<id>); the call with dry_run=false needs the same lines, two approving answers and two approval tokens for that draftId approved on two different channels within 72 h. The matched amounts must cancel out, and the same match set is uploaded once. Exact offers no API to undo a match: unmatch in Exact. WRITES to Exact Online.',
   inputSchema: {
     gl_account_code: z.string().min(1).max(20).describe('Code of the G/L account the items are on (e.g. the creditors account).'),
     account_code: z.string().min(1).max(20).optional().describe('Relation code of the matched items.'),
