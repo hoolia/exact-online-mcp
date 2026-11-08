@@ -2,8 +2,9 @@
 
 A remote [MCP](https://modelcontextprotocol.io) server that lets people in your organisation connect Claude
 (claude.ai, Claude Desktop, mobile) to **their own** Exact Online administrations. Every user signs in with their own
-Exact account, so Claude only sees what that user can already see. **Version 1 is read-only**; three write tools exist
-behind `ENABLE_WRITE_TOOLS` (off by default).
+Exact account, so Claude only sees what that user can already see. The server is read-only unless write tools are
+enabled (`ENABLE_WRITE_TOOLS`, off by default). Workloads (agents, scheduled jobs) can call it with an OIDC access token
+instead of a broker login.
 
 ## Architecture
 
@@ -31,7 +32,17 @@ authorization server towards Claude** and brokers the Exact login behind it.
   are serialized per user and the new refresh token is written to the DB **before** the new access token is used.
 * If Exact rejects a refresh, the user is marked disconnected: tools answer *"Your Exact Online connection has expired.
   Please reconnect the connector in Claude's settings."* and `/token` returns `invalid_grant` so Claude prompts a reconnect.
-* Source layout: `src/oauth/` (auth server + broker), `src/exact/` (regions, token manager, API client), `src/tools/` (MCP tools).
+* **Workload callers:** with `JWT_ISSUER` set, a bearer token that is a JWT is verified against the issuer's JWKS (signature,
+  `iss`, `aud`, `exp`, optionally `azp`) and runs on the Exact connection of `JWT_EXACT_USER_ID`, which a person connects
+  once through the broker. Broker tokens keep working next to it.
+* **Exact limits:** a token bucket per division (default 50 calls/minute, 4,500/day) waits up to 10 s or refuses before
+  Exact does, and follows the remaining counts in Exact's rate limit headers. A circuit breaker per endpoint stops calls
+  after 8 responses with status 400, 401, 403 or 404 in a rolling hour, because Exact blocks the app key at 10.
+* **Bookkeeping write tools** (draft entries, attach documents, process, match sets) need Postgres (`DATABASE_URL`) for
+  the idempotency ledger and the audit log; without it they are not registered. See TOOLS.md.
+* Source layout: `src/oauth/` (auth server + broker), `src/auth/` (JWT validation), `src/exact/` (regions, token manager,
+  API client, limits), `src/tools/` (MCP tools), `src/policy/` (validators, description template, approval tiers and
+  tokens), `src/db/` and `migrations/` (Postgres ledger and audit log).
 
 ## 1. Exact Online App Center setup (manual)
 
@@ -60,9 +71,31 @@ startup; the server refuses to start with a clear message if anything is missing
 | `EXACT_DEFAULT_REGION` / `EXACT_ENABLED_REGIONS` | Regions (`nl be de uk fr es us`). With one enabled region users skip the region page. |
 | `ALLOWED_EXACT_USER_IDS` | Optional comma-separated Exact `UserID` GUIDs; empty = anyone who can log in to Exact. Rejected attempts are logged with the user id. |
 | `EXTRA_REDIRECT_URIS` | Extra allowed OAuth redirect URIs. Built in: `https://claude.ai/api/mcp/auth_callback`, `https://claude.com/api/mcp/auth_callback`, `http://localhost:*`, `http://127.0.0.1:*`. |
-| `ENABLE_WRITE_TOOLS` | `true` registers every write tool (see TOOLS.md). |
-| `WRITE_TOOLS` | Comma-separated write tool names to register instead of all of them, e.g. `draft_purchase_entry,attach_document`; an unknown name stops the server at startup. |
-| `MAX_ATTACHMENT_MB` | Largest file `attach_document` accepts (default 20). |
+| `ENABLE_WRITE_TOOLS` | `true` registers every write tool the configuration supports (see TOOLS.md); the log names the ones left out and why. |
+| `WRITE_TOOLS` | Comma-separated write tool names to register instead of all of them, e.g. `draft_purchase_entry,attach_document`; an unknown name, or a name the configuration does not support, stops the server at startup. |
+| `MAX_ATTACHMENT_MB` | Largest file `attach_document` and the draft tools accept (default 20). |
+| `EXACT_RATE_PER_MINUTE` / `EXACT_RATE_PER_DAY` | Calls per division the server allows itself (default 50 and 4,500; Exact allows 60 and 5,000). |
+| `EXACT_BREAKER_ERRORS` | Client errors (400/401/403/404) per endpoint per hour that pause the endpoint (default 8, max 9). |
+| `JWT_ISSUER` | OIDC issuer URL (a Keycloak realm URL) of workload access tokens; empty: only broker logins. |
+| `JWT_AUDIENCE` | Required `aud` of workload tokens; required with `JWT_ISSUER`. |
+| `JWT_JWKS_URL` | JWKS URL; default `<JWT_ISSUER>/protocol/openid-connect/certs` (Keycloak). |
+| `JWT_ALLOWED_CLIENTS` | Comma-separated `azp` values allowed to call; empty: any client of the issuer with the audience. |
+| `JWT_EXACT_USER_ID` | Exact `UserID` GUID whose broker connection workload calls use; required with `JWT_ISSUER`. |
+| `DATABASE_URL` | `postgres://` or `postgresql://` URL of the ledger and audit database (the `uri` key of a CloudNativePG `<cluster>-app` Secret fits); migrations in `migrations/` run at startup. Empty: the bookkeeping write tools stay disabled. |
+| `APPROVAL_SIGNING_KEY` | HMAC key (32+ characters) of approval tokens; empty: `process_entry` and `create_matchset` stay disabled. |
+| `DESCRIPTION_TEMPLATE` | Entry description template with `{supplier}`, `{period}`, `{ref}`, `{short}` (default `{supplier}\|{period}\|{ref}\|{short}`). |
+| `DESCRIPTION_MAX_LENGTH` | Longest rendered description (default 60). |
+| `DUPLICATE_WINDOW_DAYS` | Days around the invoice date in which the same supplier and gross amount count as a duplicate (default 7). |
+| `TIER_AUTO_MAX_EUR` | Auto tier: gross below this (default 250). |
+| `TIER_AUTO_MIN_SUPPLIER_ENTRIES` | Auto tier: earlier ledger entries of the supplier (default 3). |
+| `TIER_AUTO_HOLD_HOURS` | Auto tier: hours before `process_entry` releases the entry (default 24). |
+| `TIER_TWO_STEP_ABOVE_EUR` | Two-step tier: gross or total debit above this (default 5000). |
+| `TIER_BALANCE_ACCOUNT_ALLOWLIST` | Balance sheet G/L account codes that do not force two-step (default none). |
+| `TIER_PAYROLL_JOURNALS` | Journal codes that always need two-step (default none). |
+| `ENABLE_MATCHSETS` | `true` registers `create_matchset` (XML MatchSets upload; default false). |
+| `EXACT_PROCESS_MODE` | `record` (default): `process_entry` records the release, a person processes the entry in Exact. `api`: it also sets Status 50 on purchase entries. |
+| `APPROVAL_ANSWER_APPROVE` / `APPROVAL_ANSWER_REJECT` | Case-insensitive regular expressions an approver's answer must match, and must not match (defaults in `src/policy/approval.ts`). |
+| `AUDIT_MODEL_HEADER` | Request header whose value the audit log stores as model version (default `x-model-version`). |
 
 ## 3. Deploy (Cloudflare Tunnel)
 
@@ -90,7 +123,9 @@ The image `ghcr.io/hoolia/exact-online-mcp:<version>` (built from `Containerfile
 non-root UID in group 0 and writes only `DB_PATH` (default `/data/connector.db`): mount a ReadWriteOnce volume on `/data` and run
 one replica with the `Recreate` strategy. Publish `/` of the Service on an HTTPS Route or Ingress on the host of `PUBLIC_BASE_URL`;
 the server trusts one proxy hop for the client address. Give the secrets (`EXACT_CLIENT_SECRET`, `TOKEN_ENCRYPTION_KEY`,
-`SESSION_SIGNING_KEY`) from a Secret. A login logs the Exact `UserID` (`exact login`), which `ALLOWED_EXACT_USER_IDS` takes.
+`SESSION_SIGNING_KEY`, `APPROVAL_SIGNING_KEY`, the password in `DATABASE_URL`) from a Secret. A login logs the Exact `UserID`
+(`exact login`), which `ALLOWED_EXACT_USER_IDS` and `JWT_EXACT_USER_ID` take. The image carries `migrations/`; the database user
+needs `CREATE` on its schema for the first start.
 
 ## 4. Connecting in Claude
 
@@ -112,7 +147,15 @@ Exact account. Reconnect from the same place if Exact access expires or is revok
   Rotating `SESSION_SIGNING_KEY` only invalidates in-flight logins.
 * **Revoking a user:** delete their row from `users` and `tokens`, or add an allowlist and reconnect. Revoking the app in Exact makes
   tools return the reconnect message at the next call.
-* **Audit log:** write tool calls are recorded in the `audit_log` table (user, division, tool, SHA-256 of payload, Exact id, time).
+* **Audit log:** without `DATABASE_URL`, write tool calls are recorded in the SQLite `audit_log` table (user, division, tool,
+  SHA-256 of payload, Exact id, time). With it, every tool call is recorded in the Postgres `audit_log` table: time, caller kind,
+  id, name and client, Exact user, division, tool, SHA-256 of the arguments, outcome (`ok`, `refused`, `error`), HTTP status of
+  the last Exact response, Exact id, model version header. Arguments and tokens are never stored. The server never deletes audit
+  rows; keep them for the statutory retention period (7 years in the Netherlands) and grant the application role no `DELETE`
+  on `audit_log` once migrated.
+* **Approval tokens:** `npm run approval-token -- --entry <draftId> --tier approve|two-step --approver <id> [--answer <text>] [--hours 24]`
+  with `APPROVAL_SIGNING_KEY` in the environment prints a token for `process_entry` or `create_matchset`. An approval flow that
+  holds the key issues them the same way (`src/policy/approval.ts`).
 * **Updates:** `git pull && docker compose up -d --build`.
 
 ## 6. Development
@@ -134,8 +177,15 @@ npx @modelcontextprotocol/inspector   # connect to http://localhost:8080/mcp
 * Exact returns ~60 rows per page and allows 60 requests/minute and a daily quota per app/division. Tools cap pages and rows
   (receivables/payables: ~1200 items; transactions: 200). When capped, the output says `truncated`.
 * Rate limits: waits up to 10 s and retries (max 2); longer waits return "rate limit reached, try again in N seconds".
+* The REST API documents no call that processes an entry: `GeneralJournalEntries` has no PUT, and whether `PUT PurchaseEntries`
+  accepts `Status: 50` is unverified, so `EXACT_PROCESS_MODE=api` stays off until tested in a demo administration.
+* Whether entries posted through the API stay open (Status 20) depends on the journal settings; the draft tools report a
+  warning when Exact answers with another status.
+* `create_matchset` follows the XML format of `XMLUpload.aspx?Topic=MatchSets` and stays behind `ENABLE_MATCHSETS` until a
+  synthetic test pair has been matched and unmatched (by hand in Exact) in a real administration.
 * P&L is the current financial year/period (what Exact's ProfitLossOverview exposes); use `get_revenue_by_period` for other years' revenue.
 * Sales orders require Exact's Wholesale & Distribution package; the user needs the matching Exact rights for any write.
-* Access tokens last 1 h, refresh tokens 60 d (rotating). SQLite means a single instance; do not run replicas.
+* Access tokens last 1 h, refresh tokens 60 d (rotating). SQLite, the in-memory rate limiter and the circuit breaker mean a
+  single instance; do not run replicas.
 * The Docker image has not been built in the environment this was written in (no Docker daemon); `npm run build` and a start
   smoke test were run instead.
