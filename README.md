@@ -154,8 +154,8 @@ Exact account. Reconnect from the same place if Exact access expires or is revok
   rows; keep them for the statutory retention period (7 years in the Netherlands) and grant the application role no `DELETE`
   on `audit_log` once migrated.
 * **Approval tokens:** `npm run approval-token -- --entry <draftId> --tier approve|two-step --approver <id> [--answer <text>] [--hours 24]`
-  with `APPROVAL_SIGNING_KEY` in the environment prints a token for `process_entry` or `create_matchset`. An approval flow that
-  holds the key issues them the same way (`src/policy/approval.ts`).
+  with `APPROVAL_SIGNING_KEY` in the environment prints a token for `process_entry` or `create_matchset`. An approval service
+  that holds the key issues them by the format and test vector in TOOLS.md (*Approval token format*).
 * **Updates:** `git pull && docker compose up -d --build`.
 
 ## 6. Development

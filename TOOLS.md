@@ -129,14 +129,13 @@ and a person checks Exact and deletes that ledger row when no entry was created.
 The amount of a purchase entry is the larger of the absolute gross and the sum of the absolute line amounts plus the absolute
 VAT, so offsetting lines rate on their volume; the amount of a general journal entry is its total debit including VAT.
 
-An approval token is HMAC-SHA256 signed with `APPROVAL_SIGNING_KEY` and carries the draftId, the tier (`approve` or
-`two-step`), the approver, the expiry and optionally the SHA-256 of the approver's normalised answer (trimmed, single spaces,
-lower case). `process_entry` refuses:
+An approval token is issued by the approval service that holds `APPROVAL_SIGNING_KEY` (never the agent that drafts the
+entry), after the approver answered; its format is below. `process_entry` refuses:
 
 - an answer missing, or one that matches `APPROVAL_ANSWER_REJECT` or does not match `APPROVAL_ANSWER_APPROVE` (defaults: `ja`,
-  `yes`, `akkoord`, `ok` and similar approve; `nee`, `no`, `stop` and similar reject), one answer per required approval;
-- a token that is expired, for another draft, for a lower tier, repeated, from the caller that drafted the entry, or issued
-  for a different answer than the one given;
+  `yes`, `akkoord`, `ok`, `boek` and similar approve; `nee`, `no`, `stop` and similar reject), one answer per required approval;
+- a token that is expired, valid more than 14 days ahead, for another draft, for a lower tier, repeated (approvers compare
+  case-insensitively), from the caller that drafted the entry, or issued for a different answer than the one given;
 - an entry that is no longer open in Exact.
 
 With `EXACT_PROCESS_MODE=record` it marks the entry released in the ledger and a person processes it in Exact.
@@ -146,6 +145,69 @@ once (the `matchset` table holds its draftId before the upload; a failed upload 
 Exact answers HTTP 200 also when it refuses: the tool reads every `Message` element and fails on type 0 (error) or 3 (fatal),
 or when no type 2 (success) message is present, listing every message. The `MatchSets` XML topic has no delete, so a match is
 undone in Exact (*Financial > Matching*, unmatch).
+
+### Approval token format
+
+A token is `<payload>.<mac>`, both parts base64url (RFC 4648 section 5) without `=` padding.
+
+| Field | Type | Value |
+|---|---|---|
+| `v` | integer | `1` |
+| `entry` | string | the draftId, lower case: the Exact entry GUID, or `matchset:<64 hex>` |
+| `tier` | string | `approve` or `two-step` (`two_step` is accepted too); a `two-step` token also satisfies `approve` |
+| `approver` | string | stable id of the person who approved, trimmed, lower case; two-step needs two different ones |
+| `exp` | integer | expiry in epoch seconds; the server refuses an expired token and one valid more than 14 days ahead |
+| `ans` | string, optional | lower-case hex SHA-256 of the normalised answer; the call must then carry that answer |
+
+Signing procedure:
+
+1. Normalise the answer text: Unicode NFC, every run of whitespace to one space, trim, lower case. `ans` is the hex SHA-256
+   of its UTF-8 bytes.
+2. Serialise the payload as JSON in UTF-8, keys in the order of the table, no whitespace, `ans` left out when not used.
+3. `payload` = base64url of those bytes.
+4. `mac` = base64url of HMAC-SHA256 with key = the UTF-8 bytes of `APPROVAL_SIGNING_KEY` and message = the ASCII bytes of
+   `payload`.
+5. Token = `payload` + `.` + `mac`.
+
+The server verifies the MAC over `payload` as received and then reads the JSON, so step 2 only has to be exact to reproduce
+the test vector. In Python:
+
+```python
+import base64, hashlib, hmac, json, re, unicodedata
+
+def b64url(b: bytes) -> str:
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode("ascii")
+
+def approval_token(key: str, entry: str, tier: str, approver: str, exp: int, answer: str | None = None) -> str:
+    payload = {"v": 1, "entry": entry.lower(), "tier": tier, "approver": approver.strip().lower(), "exp": exp}
+    if answer is not None:
+        norm = re.sub(r"\s+", " ", unicodedata.normalize("NFC", answer)).strip().lower()
+        payload["ans"] = hashlib.sha256(norm.encode("utf-8")).hexdigest()
+    body = b64url(json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+    mac = b64url(hmac.new(key.encode("utf-8"), body.encode("ascii"), hashlib.sha256).digest())
+    return f"{body}.{mac}"
+```
+
+Test vector (also in `test/approval-vector.test.ts`): key `test-vector-approval-key-0123456789abcdef`, entry
+`33333333-3333-3333-3333-333333333333`, tier `approve`, approver `alice`, exp `1794132000` (2026-11-08T10:00:00Z), answer
+`Boek  33333333-3333-3333-3333-333333333333` (normalised `boek 33333333-3333-3333-3333-333333333333`, `ans`
+`c057d277a56085d5e988165be31bdd27ef5534cdd7f3238efabbf78c05d720fa`). Payload JSON:
+
+```
+{"v":1,"entry":"33333333-3333-3333-3333-333333333333","tier":"approve","approver":"alice","exp":1794132000,"ans":"c057d277a56085d5e988165be31bdd27ef5534cdd7f3238efabbf78c05d720fa"}
+```
+
+Token:
+
+```
+eyJ2IjoxLCJlbnRyeSI6IjMzMzMzMzMzLTMzMzMtMzMzMy0zMzMzLTMzMzMzMzMzMzMzMyIsInRpZXIiOiJhcHByb3ZlIiwiYXBwcm92ZXIiOiJhbGljZSIsImV4cCI6MTc5NDEzMjAwMCwiYW5zIjoiYzA1N2QyNzdhNTYwODVkNWU5ODgxNjViZTMxYmRkMjdlZjU1MzRjZGQ3ZjMyMzhlZmFiYmY3OGMwNWQ3MjBmYSJ9.ooZVlE-72yRTjYVSsXW7nINfKV4-9lz8wAovLecvOe4
+```
+
+The same entry, tier `two-step`, approver `alice`, exp `1794132000` and no answer give:
+
+```
+eyJ2IjoxLCJlbnRyeSI6IjMzMzMzMzMzLTMzMzMtMzMzMy0zMzMzLTMzMzMzMzMzMzMzMyIsInRpZXIiOiJ0d28tc3RlcCIsImFwcHJvdmVyIjoiYWxpY2UiLCJleHAiOjE3OTQxMzIwMDB9.oqam9uIlIuThpUsZbHXmBC7D6mP_Q9HGskHxC66NKg0
+```
 
 ### Example: `create_sales_order` (dry run)
 
