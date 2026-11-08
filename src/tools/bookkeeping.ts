@@ -132,7 +132,11 @@ function describe(ctx: ToolContext, parts: { supplier: string; period: string; r
   }
 }
 
-const shapeDup = (r: LedgerRow) => ({ exact_entry_id: r.exactEntryId, entry_number: r.exactEntryNumber, status: r.status, entry_date: r.entryDate, amount: r.amountCents / 100 });
+/** Exact answered and refused the request (4xx), or the call never left the server (rate limit, breaker). */
+const rejectedByExact = (e: unknown) => e instanceof ExactError && (e.kind === 'rate_limit' || (e.status !== undefined && e.status >= 400 && e.status < 500));
+
+const dupName = (d: LedgerRow) => d.exactEntryId ?? (d.status === 'unknown' ? `an earlier attempt whose outcome in Exact is unknown (ledger row ${d.id})` : 'a reservation in progress');
+const shapeDup = (r: LedgerRow) => ({ ledger_id: r.id, exact_entry_id: r.exactEntryId, entry_number: r.exactEntryNumber, status: r.status, entry_date: r.entryDate, amount: r.amountCents / 100 });
 
 function refused(summary: string, data: Record<string, unknown>) {
   return { summary: `REFUSED: ${summary} Nothing was written.`, data: { refused: true, ...data } };
@@ -165,7 +169,7 @@ async function executeDraft(ctx: ToolContext, tool: string, plan: DraftPlan, dry
     checks: plan.checks, document: plan.file ? { file_name: plan.file.name, bytes: plan.file.bytes.length, sha256: plan.file.sha256 } : null,
   };
   if (plan.duplicates.length) {
-    return refused(`this entry duplicates ${plan.duplicates.map((d) => d.exactEntryId ?? 'a reservation in progress').join(', ')}.`, { duplicate: true, existing: plan.duplicates.map(shapeDup), ...preview });
+    return refused(`this entry duplicates ${plan.duplicates.map(dupName).join(', ')}.`, { duplicate: true, existing: plan.duplicates.map(shapeDup), ...preview });
   }
   if (bad.length) return refused(`${bad.map((c) => c.message).join('; ')}.`, preview);
   if (dry) {
@@ -181,20 +185,27 @@ async function executeDraft(ctx: ToolContext, tool: string, plan: DraftPlan, dry
   } catch (e) {
     if (e instanceof DuplicateKeyError) {
       const existing = await ledger.findDuplicates({ division: plan.division, kind: plan.kind, ...plan.ledgerKey, windowDays: 0 });
-      return refused(`this entry duplicates ${existing.map((d) => d.exactEntryId ?? 'a reservation in progress').join(', ') || 'an entry in the ledger'}.`, { duplicate: true, existing: existing.map(shapeDup) });
+      return refused(`this entry duplicates ${existing.map(dupName).join(', ') || 'an entry in the ledger'}.`, { duplicate: true, existing: existing.map(shapeDup) });
     }
     throw e;
   }
   let created: any;
   let documentId: string | null = null;
+  let posting = false;
   try {
     if (plan.file) {
       documentId = await uploadDocument(ctx, plan.division, plan.file, plan.document);
       plan.attachDocument(plan.body, documentId);
     }
+    posting = true;
     created = await ctx.exact.post(plan.resource, plan.body, { division: plan.division });
     if (!created?.[plan.idField]) throw new ExactError('api', 'Exact Online returned no entry id.');
   } catch (e) {
+    if (posting && !rejectedByExact(e)) {
+      await ledger.markUnknown(reservation);
+      const msg = e instanceof ExactError ? e.userMessage : 'The call to Exact Online failed.';
+      throw new ExactError('api', `${msg} Exact may have created the entry anyway: the ledger keeps its key (row ${reservation}, status unknown), so a retry is refused as a duplicate. Look for it in Exact before booking it again.${documentId ? ` Document ${documentId} was created.` : ''}`, e instanceof ExactError ? e.status : undefined);
+    }
     await ledger.release(reservation);
     if (e instanceof ExactError && documentId) throw new ExactError(e.kind, `${e.userMessage} Document ${documentId} was created without an entry.`, e.status);
     throw e;

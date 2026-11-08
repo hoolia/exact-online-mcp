@@ -1,7 +1,8 @@
 import { transaction, type PoolLike } from './pg.js';
 
 export type EntryKind = 'purchase' | 'general_journal';
-export type LedgerStatus = 'reserved' | 'drafted' | 'approved' | 'processed';
+/** unknown: the POST to Exact failed in a way that may still have created the entry; the key stays taken */
+export type LedgerStatus = 'reserved' | 'unknown' | 'drafted' | 'approved' | 'processed';
 
 export interface LedgerRow {
   id: number;
@@ -119,6 +120,10 @@ export class PgStore {
 
   async release(id: number) {
     await this.pool.query(`DELETE FROM ledger WHERE id = $1 AND status = 'reserved'`, [id]);
+  }
+
+  async markUnknown(id: number) {
+    await this.pool.query(`UPDATE ledger SET status = 'unknown' WHERE id = $1 AND status = 'reserved'`, [id]);
   }
 
   async markDrafted(id: number, exactEntryId: string, entryNumber: number | null) {

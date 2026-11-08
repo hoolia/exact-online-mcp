@@ -191,6 +191,24 @@ describe('draft_purchase_entry', () => {
     expect(st.posted[2]!.body.Document).toBe(DOC);
     expect((await ledger.getByExactId(100, ENTRY))!.pdfSha256).toBe(createHash('sha256').update(PDF).digest('hex'));
   });
+  it('keeps the key when Exact may have created the entry, releases it when Exact refused', async () => {
+    const { token, st } = await start();
+    let answer = 500;
+    env.fake.on((url, init) => (url.pathname.endsWith('/purchaseentry/PurchaseEntries') && init.method === 'POST' && answer ? json({ error: { message: { value: 'nope' } } }, answer) : undefined));
+    answer = 400;
+    const refusedByExact = await call(token, 'draft_purchase_entry', { ...purchase(), dry_run: false });
+    expect(refusedByExact.isError).toBe(true);
+    expect((await ledger.pool.query('SELECT COUNT(*) AS n FROM ledger')).rows[0].n).toBe(0);
+    answer = 500;
+    const unknown = await call(token, 'draft_purchase_entry', { ...purchase(), dry_run: false });
+    expect(unknown.summary).toContain('may have created the entry');
+    expect((await ledger.pool.query('SELECT status FROM ledger')).rows).toEqual([{ status: 'unknown' }]);
+    answer = 0;
+    const retry = await call(token, 'draft_purchase_entry', { ...purchase(), dry_run: false });
+    expect(retry.data.duplicate).toBe(true);
+    expect(retry.summary).toContain('outcome in Exact is unknown');
+    expect(st.posted).toEqual([]);
+  });
   it('refuses an invoice number already booked in Exact', async () => {
     const { token, st } = await start();
     st.existingYourRef = true;

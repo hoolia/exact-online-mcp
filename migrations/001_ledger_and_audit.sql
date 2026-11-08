@@ -17,7 +17,7 @@ CREATE TABLE ledger (
   dedupe_key TEXT NOT NULL,
   exact_entry_id UUID,
   exact_entry_number INTEGER,
-  -- reserved | drafted | approved | processed
+  -- reserved | unknown | drafted | approved | processed
   status TEXT NOT NULL,
   -- auto | approve | two_step
   tier TEXT NOT NULL,

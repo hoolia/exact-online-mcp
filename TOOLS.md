@@ -114,7 +114,9 @@ has at most two decimals; an amount with more is rejected as invalid input, so E
 
 A duplicate is refused with the Exact GUID of the existing entry. The normalised invoice number is upper case, letters and
 digits only, without leading zeros (`inv-2026/0012` and `INV 2026.0012` are one invoice). The ledger key is reserved before the
-POST, so two concurrent calls cannot both write.
+POST, so two concurrent calls cannot both write. A POST that Exact refuses (4xx) frees the key. A POST without a clear answer
+(network error, 5xx, no entry id in the response) leaves the key in status `unknown`: a retry is refused with the ledger row id,
+and a person checks Exact and deletes that ledger row when no entry was created.
 
 **Approval tiers** (decided at draft time from the `TIER_*` settings, enforced by `process_entry`):
 
