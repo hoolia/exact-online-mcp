@@ -54,7 +54,7 @@ export async function startApp(over: Record<string, string> = {}, now?: () => nu
   const cfg = loadConfig(baseEnv(over));
   const store = new Store(':memory:', cfg.tokenEncryptionKey, now);
   const fake = new FakeExact();
-  const app = createApp({ cfg, store, log: createLogger('silent'), fetchImpl: fake.fetch, sleep: async () => {} });
+  const app = createApp({ cfg, store, log: createLogger('silent'), fetchImpl: fake.fetch, sleep: async () => {}, now });
   const server = await new Promise<Server>((r) => { const s = app.listen(0, () => r(s)); });
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   return { cfg, store, fake, base, server, close: () => server.close() };

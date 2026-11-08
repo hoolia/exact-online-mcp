@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { LimitSettings } from './exact/limits.js';
 
 export const REGIONS = ['nl', 'be', 'de', 'uk', 'fr', 'es', 'us'] as const;
 export type Region = (typeof REGIONS)[number];
@@ -24,6 +25,9 @@ const schema = z.object({
   ALLOWED_EXACT_USER_IDS: z.string().optional(),
   EXTRA_REDIRECT_URIS: z.string().optional(),
   DB_PATH: z.string().default('/data/connector.db'),
+  EXACT_RATE_PER_MINUTE: z.coerce.number().int().min(1).max(60).default(50),
+  EXACT_RATE_PER_DAY: z.coerce.number().int().min(1).max(5000).default(4500),
+  EXACT_BREAKER_ERRORS: z.coerce.number().int().min(1).max(9).default(8),
   LOG_LEVEL: z.enum(['silent', 'fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
 });
 
@@ -45,6 +49,7 @@ export interface Config {
   extraRedirectUris: string[];
   dbPath: string;
   logLevel: string;
+  limits: LimitSettings;
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
@@ -76,5 +81,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     extraRedirectUris: csv(c.EXTRA_REDIRECT_URIS),
     dbPath: c.DB_PATH,
     logLevel: c.LOG_LEVEL,
+    limits: { perMinute: c.EXACT_RATE_PER_MINUTE, perDay: c.EXACT_RATE_PER_DAY, breakerErrors: c.EXACT_BREAKER_ERRORS, breakerWindowMs: 60 * 60 * 1000 },
   };
 }

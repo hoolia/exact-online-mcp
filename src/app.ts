@@ -11,15 +11,15 @@ import { ExactError, RECONNECT_MESSAGE } from './exact/errors.js';
 import { buildTools } from './tools/index.js';
 import type { ToolContext } from './tools/types.js';
 
-export interface AppDeps { cfg: Config; store: Store; log: Logger; fetchImpl?: FetchFn; sleep?: (ms: number) => Promise<void> }
+export interface AppDeps { cfg: Config; store: Store; log: Logger; fetchImpl?: FetchFn; sleep?: (ms: number) => Promise<void>; now?: () => number }
 
-export function createApp({ cfg, store, log, fetchImpl = fetch, sleep }: AppDeps) {
+export function createApp({ cfg, store, log, fetchImpl = fetch, sleep, now = Date.now }: AppDeps) {
   const app = express();
   app.set('trust proxy', 1);
   app.disable('x-powered-by');
 
   const tokens = new TokenManager(cfg, store, log, fetchImpl);
-  const exact = new ExactService(tokens, log, fetchImpl, sleep);
+  const exact = new ExactService(tokens, log, fetchImpl, sleep, now, cfg.limits);
   const tools = buildTools(cfg);
   setErrorLogger((err) => log.error({ err: String(err) }, 'tool failed'));
 
