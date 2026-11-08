@@ -18,7 +18,7 @@ export function toolError(message: string) {
 }
 
 export function createMcpServer(tools: ToolDef[], getContext: ContextFactory, onCall?: CallHook): McpServer {
-  const server = new McpServer({ name: 'exact-online', version: '0.2.0' });
+  const server = new McpServer({ name: 'exact-online', version: '0.3.0' });
   for (const tool of tools) {
     server.registerTool(
       tool.name,
