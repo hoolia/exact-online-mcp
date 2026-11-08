@@ -33,6 +33,8 @@ export class JwtVerifier {
     try {
       const { payload } = await jwtVerify(token, this.getKey, {
         issuer: this.s.issuer, audience: this.s.audience, clockTolerance: 30, algorithms: ['RS256', 'RS384', 'RS512', 'PS256', 'ES256', 'ES384', 'EdDSA'],
+        // jose checks exp only when present; a token without it would never expire
+        requiredClaims: ['exp', 'sub'],
       });
       if (!payload.sub) return null;
       const azp = typeof payload.azp === 'string' ? payload.azp : typeof payload.client_id === 'string' ? payload.client_id : null;

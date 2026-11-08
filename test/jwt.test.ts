@@ -59,6 +59,8 @@ describe('workload callers', () => {
     ['foreign key', () => mint({}, { key: other })],
     ['expired', () => mint({}, { exp: '-5m' })],
     ['client not allowed', () => mint({ azp: 'intruder' })],
+    ['no expiry', () => new SignJWT({ azp: 'agent' }).setProtectedHeader({ alg: 'RS256', kid: 'k1' }).setIssuer(ISS).setAudience(AUD).setSubject('sa-123').setIssuedAt().sign(priv)],
+    ['alg none', async () => `${Buffer.from(JSON.stringify({ alg: 'none' })).toString('base64url')}.${Buffer.from(JSON.stringify({ iss: ISS, aud: AUD, sub: 'sa-123', azp: 'agent', exp: Math.floor(Date.now() / 1000) + 300 })).toString('base64url')}.x`],
   ])('rejects a token with %s', async (_n, make) => {
     await connected();
     expect((await rawList(await make())).status).toBe(401);
