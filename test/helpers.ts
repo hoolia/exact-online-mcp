@@ -50,7 +50,7 @@ export class FakeExact {
 
 export interface TestEnv { cfg: Config; store: Store; fake: FakeExact; base: string; server: Server; close(): void }
 
-export async function startApp(over: Record<string, string> = {}, now?: () => number, deps: Partial<Pick<AppDeps, 'jwksGetKey'>> = {}): Promise<TestEnv> {
+export async function startApp(over: Record<string, string> = {}, now?: () => number, deps: Partial<Pick<AppDeps, 'jwksGetKey' | 'ledger'>> = {}): Promise<TestEnv> {
   const cfg = loadConfig(baseEnv(over));
   const store = new Store(':memory:', cfg.tokenEncryptionKey, now);
   const fake = new FakeExact();

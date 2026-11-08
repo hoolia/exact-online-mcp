@@ -1,6 +1,6 @@
 import type { Logger } from '../logger.js';
 import type { UserRecord } from '../store.js';
-import { apiBase } from './regions.js';
+import { apiBase, exactHost } from './regions.js';
 import { ExactError } from './errors.js';
 import { convertDates } from './dates.js';
 import type { FetchFn, TokenManager } from './tokens.js';
@@ -29,6 +29,8 @@ export interface ExactApi {
   getOne<T = any>(resource: string, q: Pick<QueryOptions, 'select'>, o?: { division?: number }): Promise<T | null>;
   post<T = any>(resource: string, body: unknown, o?: { division?: number }): Promise<T>;
   put(resource: string, body: unknown, o?: { division?: number }): Promise<void>;
+  /** POST an XML document to XMLUpload.aspx for a topic; returns the response XML */
+  postXml(topic: string, xml: string, o?: { division?: number }): Promise<string>;
   /** HTTP status of the last Exact response this client received; null before any call */
   readonly lastStatus: number | null;
 }
@@ -83,7 +85,7 @@ class ExactClient implements ExactApi {
     }
   }
 
-  private async request(url: string, init: { method?: string; body?: unknown } = {}, attempt = 0, rejected?: string): Promise<any> {
+  private async request(url: string, init: { method?: string; body?: unknown; xml?: string } = {}, attempt = 0, rejected?: string): Promise<any> {
     const { division, endpoint } = await this.guard(url);
     const token = await this.svc._tokens.getAccessToken(this.user.id, rejected);
     let res: Response;
@@ -91,10 +93,10 @@ class ExactClient implements ExactApi {
       res = await this.svc._fetch(url, {
         method: init.method ?? 'GET',
         headers: {
-          authorization: `Bearer ${token}`, accept: 'application/json',
-          ...(init.body !== undefined ? { 'content-type': 'application/json' } : {}),
+          authorization: `Bearer ${token}`, accept: init.xml !== undefined ? 'application/xml' : 'application/json',
+          ...(init.xml !== undefined ? { 'content-type': 'application/xml' } : init.body !== undefined ? { 'content-type': 'application/json' } : {}),
         },
-        body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
+        body: init.xml !== undefined ? init.xml : init.body !== undefined ? JSON.stringify(init.body) : undefined,
       });
     } catch (err) {
       this.svc._log.warn({ err: String(err) }, 'exact request network error');
@@ -122,6 +124,7 @@ class ExactClient implements ExactApi {
     }
     if (!res.ok) throw await this.apiError(res);
     if (res.status === 204) return null;
+    if (init.xml !== undefined) return res.text();
     return res.json();
   }
 
@@ -224,6 +227,12 @@ class ExactClient implements ExactApi {
     const division = await this.resolveDivision(o.division);
     const j = await this.request(`${apiBase(this.user.region)}/${division}/${resource}`, { method: 'POST', body });
     return convertDates(j?.d) as T;
+  }
+
+  async postXml(topic: string, xml: string, o: { division?: number } = {}): Promise<string> {
+    const division = await this.resolveDivision(o.division);
+    const url = `${exactHost(this.user.region)}/docs/XMLUpload.aspx?Topic=${encodeURIComponent(topic)}&_Division_=${division}`;
+    return String(await this.request(url, { method: 'POST', xml }) ?? '');
   }
 
   async put(resource: string, body: unknown, o: { division?: number } = {}): Promise<void> {

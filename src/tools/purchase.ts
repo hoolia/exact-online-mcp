@@ -1,13 +1,13 @@
 import { z } from 'zod';
 import { defineTool, type ToolContext } from './types.js';
-import { divisionField, fmt, guidField, hashPayload, isoDate, readOnly, round2, topField, trimCode } from './common.js';
+import { divisionField, fmt, guidField, isoDate, readOnly, round2, topField, trimCode } from './common.js';
 import { and, date, guid, str } from '../exact/odata.js';
 import { ExactError } from '../exact/errors.js';
 
 export const ENTRY_STATUS: Record<string, number> = { rejected: 5, open: 20, processed: 50 };
 export const entryStatusName = (n: number) => (n === 5 ? 'rejected' : n === 20 ? 'open' : n === 50 ? 'processed' : String(n));
 
-const ENTRY_SELECT = ['EntryID', 'EntryNumber', 'InvoiceNumber', 'Supplier', 'SupplierName', 'EntryDate', 'DueDate', 'AmountDC', 'AmountFC', 'VATAmountFC', 'Currency', 'Description', 'Journal', 'Status', 'Type', 'YourRef', 'PaymentReference', 'Document', 'DocumentSubject'];
+export const ENTRY_SELECT = ['EntryID', 'EntryNumber', 'InvoiceNumber', 'Supplier', 'SupplierName', 'EntryDate', 'DueDate', 'AmountDC', 'AmountFC', 'VATAmountFC', 'Currency', 'Description', 'Journal', 'Status', 'Type', 'YourRef', 'PaymentReference', 'Document', 'DocumentSubject'];
 
 export const entryShape = (r: any) => ({
   id: r.EntryID, entry_number: r.EntryNumber, invoice_number: r.InvoiceNumber, supplier_id: r.Supplier, supplier_name: r.SupplierName,
@@ -17,7 +17,7 @@ export const entryShape = (r: any) => ({
   document_id: r.Document ?? null, document_subject: r.DocumentSubject ?? null,
 });
 
-async function findEntry(ctx: ToolContext, a: { entry_id?: string; entry_number?: number; division?: number }) {
+export async function findEntry(ctx: ToolContext, a: { entry_id?: string; entry_number?: number; division?: number }) {
   if (a.entry_id) return ctx.exact.getOne(`purchaseentry/PurchaseEntries(${guid(a.entry_id)})`, { select: ENTRY_SELECT }, { division: a.division });
   if (a.entry_number) return (await ctx.exact.list('purchaseentry/PurchaseEntries', { select: ENTRY_SELECT, filter: `EntryNumber eq ${a.entry_number}` }, { division: a.division, maxRows: 1, maxPages: 1 })).rows[0] ?? null;
   throw new ExactError('invalid_input', 'Provide entry_id or entry_number.');
@@ -126,145 +126,3 @@ export const listDocumentTypes = defineTool({
     return { summary: `Found ${rows.length} document type(s).`, data: rows.map((t: any) => ({ id: t.ID, description: t.Description, creatable: !!t.DocumentIsCreatable })) };
   },
 });
-
-// --- write tools ---
-
-const dryRun = z.boolean().default(true).describe('Default true: only returns the payload that would be posted. Set false ONLY after the user explicitly confirmed the details.');
-const writeAnnotations = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true } as const;
-const compact = <T extends object>(o: T) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as T;
-
-const purchaseLine = z.object({
-  gl_account_id: guidField('Cost or balance G/L account GUID (from list_gl_accounts).'),
-  amount: z.number().describe('Line amount EXCLUDING VAT, in the entry currency. Negative on a credit note.'),
-  vat_code: z.string().min(1).max(8).optional().describe('VAT code (from list_vat_codes); omitted: the G/L account default.'),
-  vat_amount: z.number().optional().describe('VAT amount when it differs from what Exact calculates from the VAT code (rounding on the invoice).'),
-  description: z.string().max(240).optional(),
-  cost_center: z.string().max(8).optional().describe('Cost center code.'),
-});
-
-export const draftPurchaseEntry = defineTool({
-  name: 'draft_purchase_entry',
-  title: 'Draft purchase entry',
-  description: 'Creates a purchase entry (supplier invoice booking) that stays OPEN (Status 20, not processed) so a person reviews and processes it in Exact. WRITES to Exact Online. Refuses when an entry with the same supplier and supplier invoice number (your_ref) exists and returns that entry. Always show the dry-run result and get explicit confirmation before calling with dry_run=false. Attach the invoice PDF afterwards with attach_document.',
-  inputSchema: {
-    supplier_id: guidField('Supplier account GUID (search_accounts kind=supplier).'),
-    journal: z.string().min(1).max(10).describe('Purchase journal code (list_journals kind=purchase).'),
-    your_ref: z.string().min(1).max(60).describe("The supplier's invoice number."),
-    entry_date: isoDate('Invoice date.'),
-    due_date: isoDate('Due date; omitted: from the payment condition.').optional(),
-    description: z.string().min(1).max(60).describe('Entry description.'),
-    currency: z.string().length(3).optional().describe('ISO currency code; omitted: the division currency.'),
-    payment_reference: z.string().max(50).optional().describe('Payment reference (betalingskenmerk) from the invoice.'),
-    credit_note: z.boolean().default(false).describe('true: purchase credit note (Type 31).'),
-    lines: z.array(purchaseLine).min(1).max(50),
-    division: divisionField, dry_run: dryRun,
-  },
-  annotations: writeAnnotations,
-  async run(ctx, a) {
-    const div = await ctx.exact.resolveDivision(a.division);
-    const body = compact({
-      Journal: a.journal, Supplier: a.supplier_id, YourRef: a.your_ref, EntryDate: a.entry_date, DueDate: a.due_date, Description: a.description,
-      Currency: a.currency, PaymentReference: a.payment_reference, Type: a.credit_note ? 31 : 30,
-      PurchaseEntryLines: a.lines.map((l: any) => compact({ GLAccount: l.gl_account_id, AmountFC: l.amount, VATCode: l.vat_code, VATAmountFC: l.vat_amount, Description: l.description, CostCenter: l.cost_center })),
-    });
-    const { rows: dup } = await ctx.exact.list('purchaseentry/PurchaseEntries', { select: ENTRY_SELECT, filter: `Supplier eq ${guid(a.supplier_id)} and YourRef eq ${str(a.your_ref)}` }, { division: div, maxRows: 5, maxPages: 1 });
-    if (dup.length) {
-      return { summary: `REFUSED: supplier invoice ${a.your_ref} is already booked as purchase entry ${dup[0].EntryNumber} (${entryStatusName(dup[0].Status)}). Nothing was created.`, data: { duplicate: true, division: div, existing: dup.map(entryShape) } };
-    }
-    const net = round2(a.lines.reduce((s: number, l: any) => s + l.amount, 0));
-    if (a.dry_run) {
-      return { summary: `DRY RUN (nothing was created in division ${div}). Purchase entry for ${a.your_ref}, ${a.lines.length} line(s), ${fmt(net)} excl. VAT. Confirm with the user, then call again with dry_run=false.`, data: { dry_run: true, division: div, resource: 'purchaseentry/PurchaseEntries', payload: body } };
-    }
-    let created: any;
-    try {
-      created = await ctx.exact.post('purchaseentry/PurchaseEntries', body, { division: div });
-    } finally {
-      ctx.audit({ tool: 'draft_purchase_entry', division: div, payloadHash: hashPayload(body), exactId: created?.EntryID ?? null });
-    }
-    const status = Number(created?.Status);
-    const warn = status === 50 ? ' WARNING: Exact processed the entry immediately (Status 50); check the journal settings.' : '';
-    return { summary: `Created purchase entry ${created?.EntryNumber ?? ''} in division ${div}, status ${entryStatusName(status)}.${warn}`, data: { dry_run: false, division: div, ...entryShape(created ?? {}) } };
-  },
-});
-
-const MIME: Record<string, string> = { pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', xml: 'application/xml', tif: 'image/tiff', tiff: 'image/tiff' };
-
-async function fetchFile(ctx: ToolContext, url: string): Promise<Buffer> {
-  let u: URL;
-  try { u = new URL(url); } catch { throw new ExactError('invalid_input', 'file_url is not a valid URL.'); }
-  if (u.protocol !== 'https:') throw new ExactError('invalid_input', 'file_url must be an https URL.');
-  const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), 30_000);
-  try {
-    const res = await fetch(u, { signal: ac.signal, redirect: 'follow' });
-    if (!res.ok) throw new ExactError('invalid_input', `Could not download file_url (HTTP ${res.status}).`);
-    const len = Number(res.headers.get('content-length') ?? 0);
-    if (len > ctx.config.maxAttachmentBytes) throw new ExactError('invalid_input', 'The file is larger than the attachment limit.');
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length > ctx.config.maxAttachmentBytes) throw new ExactError('invalid_input', 'The file is larger than the attachment limit.');
-    return buf;
-  } catch (e) {
-    if (e instanceof ExactError) throw e;
-    throw new ExactError('invalid_input', 'Could not download file_url.');
-  } finally { clearTimeout(t); }
-}
-
-export const attachDocument = defineTool({
-  name: 'attach_document',
-  title: 'Attach document to purchase entry',
-  description: 'Attaches a file (the supplier invoice PDF) to a purchase entry: adds it to the document already linked to the entry, or creates a document of document_type for the supplier and links it to the entry. Give the file as content_base64 or as an https file_url the server downloads. WRITES to Exact Online. Show the dry-run result and get explicit confirmation before calling with dry_run=false.',
-  inputSchema: {
-    entry_id: guidField('Purchase entry GUID (from draft_purchase_entry or list_purchase_entries).'),
-    file_name: z.string().min(1).max(200).regex(/\.(pdf|png|jpe?g|xml|tiff?)$/i, 'use a .pdf, .png, .jpg, .xml or .tif file name').describe('File name with extension, e.g. "INV-2026-123.pdf".'),
-    content_base64: z.string().min(4).optional().describe('File content, base64 encoded.'),
-    file_url: z.string().url().optional().describe('https URL of the file (a share link) instead of content_base64.'),
-    subject: z.string().min(1).max(200).optional().describe('Document subject; omitted: "<supplier> <your_ref>".'),
-    document_type: z.number().int().positive().default(20).describe('Document type id for a new document (list_document_types); default 20 = purchase invoice.'),
-    division: divisionField, dry_run: dryRun,
-  },
-  annotations: writeAnnotations,
-  async run(ctx, a) {
-    if (!!a.content_base64 === !!a.file_url) throw new ExactError('invalid_input', 'Provide exactly one of content_base64 or file_url.');
-    const div = await ctx.exact.resolveDivision(a.division);
-    const e: any = await findEntry(ctx, { entry_id: a.entry_id, division: div });
-    if (!e) throw new ExactError('invalid_input', 'Purchase entry not found.');
-    const ext = a.file_name.split('.').pop()!.toLowerCase();
-    const file = a.content_base64 ? Buffer.from(a.content_base64, 'base64') : await fetchFile(ctx, a.file_url!);
-    if (!file.length || file.length > ctx.config.maxAttachmentBytes) throw new ExactError('invalid_input', 'The file is empty or larger than the attachment limit.');
-    if (ext === 'pdf' && file.subarray(0, 5).toString('latin1') !== '%PDF-') throw new ExactError('invalid_input', 'The content is not a PDF file.');
-    const subject = a.subject ?? `${e.SupplierName ?? 'Supplier'} ${e.YourRef ?? e.EntryNumber}`.slice(0, 200);
-    const plan = {
-      entry: { id: e.EntryID, entry_number: e.EntryNumber, supplier_name: e.SupplierName, your_ref: e.YourRef, status: entryStatusName(e.Status) },
-      document: e.Document ? { existing: e.Document } : { create: { Subject: subject, Type: a.document_type, Account: e.Supplier, DocumentDate: e.EntryDate?.slice(0, 10) } },
-      attachment: { FileName: a.file_name, bytes: file.length, mime: MIME[ext], sha256: hashPayload(file.toString('base64')) },
-    };
-    if (a.dry_run) {
-      return { summary: `DRY RUN (nothing was changed in division ${div}). ${a.file_name} (${file.length} bytes) to purchase entry ${e.EntryNumber}${e.Document ? ' (added to its existing document)' : ' (new document)'}. Confirm with the user, then call again with dry_run=false.`, data: { dry_run: true, division: div, ...plan } };
-    }
-    let docId: string | null = e.Document ?? null;
-    let attId: string | null = null;
-    let linked = !!e.Document;
-    try {
-      if (!docId) {
-        const doc: any = await ctx.exact.post('documents/Documents', compact(plan.document.create!), { division: div });
-        docId = doc?.ID ?? null;
-        if (!docId) throw new ExactError('api', 'Exact Online created no document.');
-      }
-      const att: any = await ctx.exact.post('documents/DocumentAttachments', { Document: docId, FileName: a.file_name, Attachment: file.toString('base64') }, { division: div });
-      attId = att?.ID ?? null;
-      if (!linked) {
-        try {
-          await ctx.exact.put(`purchaseentry/PurchaseEntries(${guid(e.EntryID)})`, { Document: docId }, { division: div });
-          linked = true;
-        } catch (err) {
-          const msg = err instanceof ExactError ? err.userMessage : 'unknown error';
-          return { summary: `Created document ${docId} with ${a.file_name}, but could not link it to purchase entry ${e.EntryNumber}: ${msg}`, data: { dry_run: false, division: div, document_id: docId, attachment_id: attId, linked: false } };
-        }
-      }
-    } finally {
-      ctx.audit({ tool: 'attach_document', division: div, payloadHash: plan.attachment.sha256, exactId: docId });
-    }
-    return { summary: `Attached ${a.file_name} to purchase entry ${e.EntryNumber} (document ${docId}).`, data: { dry_run: false, division: div, entry_id: e.EntryID, document_id: docId, attachment_id: attId, linked } };
-  },
-});
-
