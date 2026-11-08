@@ -18,6 +18,7 @@ WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
+COPY migrations ./migrations
 # any UID in group 0 (OpenShift restricted SCC) may write the data directory; mount a volume there
 RUN mkdir /data && chgrp 0 /data && chmod 0775 /data
 VOLUME /data

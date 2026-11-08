@@ -2,11 +2,17 @@ import type { z } from 'zod';
 import type { ExactApi } from '../exact/client.js';
 import type { UserRecord } from '../store.js';
 import type { Config } from '../config.js';
+import type { CallerIdentity } from '../auth/jwt.js';
+import type { PgStore } from '../db/ledger.js';
 
 export interface ToolContext {
   exact: ExactApi;
   user: UserRecord;
   config: Config;
+  caller: CallerIdentity;
+  /** idempotency ledger and audit log; null without DATABASE_URL (ledger tools are then not registered) */
+  ledger: PgStore | null;
+  now: () => number;
   audit: (entry: { tool: string; division: number | null; payloadHash: string; exactId?: string | null }) => void;
 }
 

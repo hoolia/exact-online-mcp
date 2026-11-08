@@ -4,7 +4,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { loadConfig, type Config } from '../src/config.js';
 import { createLogger } from '../src/logger.js';
 import { Store } from '../src/store.js';
-import { createApp } from '../src/app.js';
+import { createApp, type AppDeps } from '../src/app.js';
 
 export const baseEnv = (over: Record<string, string> = {}) => ({
   PUBLIC_BASE_URL: 'https://mcp.test', PORT: '8080', EXACT_CLIENT_ID: 'exact-id', EXACT_CLIENT_SECRET: 'exact-secret',
@@ -50,11 +50,11 @@ export class FakeExact {
 
 export interface TestEnv { cfg: Config; store: Store; fake: FakeExact; base: string; server: Server; close(): void }
 
-export async function startApp(over: Record<string, string> = {}, now?: () => number): Promise<TestEnv> {
+export async function startApp(over: Record<string, string> = {}, now?: () => number, deps: Partial<Pick<AppDeps, 'jwksGetKey' | 'ledger'>> = {}): Promise<TestEnv> {
   const cfg = loadConfig(baseEnv(over));
   const store = new Store(':memory:', cfg.tokenEncryptionKey, now);
   const fake = new FakeExact();
-  const app = createApp({ cfg, store, log: createLogger('silent'), fetchImpl: fake.fetch, sleep: async () => {} });
+  const app = createApp({ cfg, store, log: createLogger('silent'), fetchImpl: fake.fetch, sleep: async () => {}, now, ...deps });
   const server = await new Promise<Server>((r) => { const s = app.listen(0, () => r(s)); });
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   return { cfg, store, fake, base, server, close: () => server.close() };

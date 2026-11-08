@@ -94,6 +94,11 @@ export class Store {
     const row = this.db.prepare('SELECT * FROM users WHERE id=?').get(id) as any;
     return row ? this.toUser(row) : null;
   }
+  /** the most recently updated connection of an Exact UserID (any region) */
+  getUserByExactId(exactUserId: string): UserRecord | null {
+    const row = this.db.prepare('SELECT * FROM users WHERE lower(exact_user_id)=lower(?) ORDER BY updated_at DESC LIMIT 1').get(exactUserId) as any;
+    return row ? this.toUser(row) : null;
+  }
   getExactTokens(userId: number): ExactTokens | null {
     const r = this.db.prepare('SELECT access_enc, refresh_enc, expires_at FROM users WHERE id=?').get(userId) as any;
     if (!r) return null;

@@ -1,9 +1,10 @@
 import type { Logger } from '../logger.js';
 import type { UserRecord } from '../store.js';
-import { apiBase } from './regions.js';
+import { apiBase, exactHost } from './regions.js';
 import { ExactError } from './errors.js';
 import { convertDates } from './dates.js';
 import type { FetchFn, TokenManager } from './tokens.js';
+import { CircuitBreaker, DEFAULT_LIMITS, RateLimiter, endpointOf, type LimitSettings } from './limits.js';
 
 export interface QueryOptions {
   select: string[];
@@ -28,16 +29,26 @@ export interface ExactApi {
   getOne<T = any>(resource: string, q: Pick<QueryOptions, 'select'>, o?: { division?: number }): Promise<T | null>;
   post<T = any>(resource: string, body: unknown, o?: { division?: number }): Promise<T>;
   put(resource: string, body: unknown, o?: { division?: number }): Promise<void>;
+  /** POST an XML document to XMLUpload.aspx for a topic; returns the response XML */
+  postXml(topic: string, xml: string, o?: { division?: number }): Promise<string>;
+  /** HTTP status of the last Exact response this client received; null before any call */
+  readonly lastStatus: number | null;
 }
 
 export class ExactService {
   private divCache = new Map<number, { at: number; list: any[] }>();
+  readonly limiter: RateLimiter;
+  readonly breaker: CircuitBreaker;
   constructor(
     private tokens: TokenManager, private log: Logger,
     private fetchImpl: FetchFn = fetch,
     private sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
     private now: () => number = Date.now,
-  ) {}
+    limits: LimitSettings = DEFAULT_LIMITS,
+  ) {
+    this.limiter = new RateLimiter(limits);
+    this.breaker = new CircuitBreaker(limits);
+  }
 
   forUser(user: UserRecord): ExactApi { return new ExactClient(this, user); }
 
@@ -48,31 +59,58 @@ export class ExactService {
   get _log() { return this.log; }
   get _fetch() { return this.fetchImpl; }
   get _sleep() { return this.sleep; }
+  get _now() { return this.now; }
 }
 
 class ExactClient implements ExactApi {
+  lastStatus: number | null = null;
   constructor(private svc: ExactService, readonly user: UserRecord) {}
 
-  private async request(url: string, init: { method?: string; body?: unknown } = {}, attempt = 0, rejected?: string): Promise<any> {
+  /** Waits for the per-division token bucket and refuses calls to an endpoint whose breaker is open. */
+  private async guard(url: string) {
+    const { division, endpoint } = endpointOf(url);
+    const until = this.svc.breaker.openUntil(endpoint, this.svc._now());
+    if (until !== null) {
+      const min = Math.max(1, Math.ceil((until - this.svc._now()) / 60_000));
+      this.svc._log.warn({ endpoint }, 'exact circuit breaker open');
+      throw new ExactError('rate_limit', `Calls to ${endpoint} are paused for ${min} minute(s) after repeated errors from Exact Online, to keep the app key from being blocked.`, 503);
+    }
+    for (;;) {
+      const r = this.svc.limiter.acquire(division, this.svc._now());
+      if (r.ok) return { division, endpoint };
+      if (r.scope === 'day' || r.waitMs > MAX_RETRY_WAIT_MS) {
+        throw new ExactError('rate_limit', `The ${r.scope === 'day' ? 'daily' : 'per-minute'} Exact Online call budget for division ${division} is used up, try again in ${Math.max(1, Math.ceil(r.waitMs / 1000))} seconds.`, 429);
+      }
+      await this.svc._sleep(r.waitMs);
+    }
+  }
+
+  private async request(url: string, init: { method?: string; body?: unknown; xml?: string } = {}, attempt = 0, rejected?: string): Promise<any> {
+    const { division, endpoint } = await this.guard(url);
     const token = await this.svc._tokens.getAccessToken(this.user.id, rejected);
     let res: Response;
     try {
       res = await this.svc._fetch(url, {
         method: init.method ?? 'GET',
         headers: {
-          authorization: `Bearer ${token}`, accept: 'application/json',
-          ...(init.body !== undefined ? { 'content-type': 'application/json' } : {}),
+          authorization: `Bearer ${token}`, accept: init.xml !== undefined ? 'application/xml' : 'application/json',
+          ...(init.xml !== undefined ? { 'content-type': 'application/xml' } : init.body !== undefined ? { 'content-type': 'application/json' } : {}),
         },
-        body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
+        body: init.xml !== undefined ? init.xml : init.body !== undefined ? JSON.stringify(init.body) : undefined,
       });
     } catch (err) {
       this.svc._log.warn({ err: String(err) }, 'exact request network error');
       throw new ExactError('api', 'Could not reach Exact Online. Please try again shortly.');
     }
+    this.lastStatus = res.status;
+    this.svc.breaker.record(endpoint, res.status, this.svc._now());
 
-    this.svc._log.debug({
-      dailyRemaining: res.headers.get('x-ratelimit-remaining'), minutelyRemaining: res.headers.get('x-ratelimit-minutely-remaining'),
-    }, 'exact rate limit');
+    const minutely = res.headers.get('x-ratelimit-minutely-remaining');
+    const daily = res.headers.get('x-ratelimit-remaining');
+    this.svc.limiter.observe(division, this.svc._now(), {
+      minute: minutely === null ? undefined : Number(minutely), day: daily === null ? undefined : Number(daily),
+    });
+    this.svc._log.debug({ dailyRemaining: daily, minutelyRemaining: minutely }, 'exact rate limit');
 
     if (res.status === 401 && attempt === 0 && rejected === undefined) return this.request(url, init, 1, token);
     if (res.status === 401) throw new ExactError('api', 'Exact Online rejected the request as unauthorized.', 401);
@@ -86,6 +124,7 @@ class ExactClient implements ExactApi {
     }
     if (!res.ok) throw await this.apiError(res);
     if (res.status === 204) return null;
+    if (init.xml !== undefined) return res.text();
     return res.json();
   }
 
@@ -188,6 +227,12 @@ class ExactClient implements ExactApi {
     const division = await this.resolveDivision(o.division);
     const j = await this.request(`${apiBase(this.user.region)}/${division}/${resource}`, { method: 'POST', body });
     return convertDates(j?.d) as T;
+  }
+
+  async postXml(topic: string, xml: string, o: { division?: number } = {}): Promise<string> {
+    const division = await this.resolveDivision(o.division);
+    const url = `${exactHost(this.user.region)}/docs/XMLUpload.aspx?Topic=${encodeURIComponent(topic)}&_Division_=${division}`;
+    return String(await this.request(url, { method: 'POST', xml }) ?? '');
   }
 
   async put(resource: string, body: unknown, o: { division?: number } = {}): Promise<void> {
