@@ -106,6 +106,12 @@ describe('draft_purchase_entry', () => {
     expect(r.data.tier).toBe('approve');
     expect(st.posted).toEqual([]);
   });
+  it('drafts a credit note with negative amounts as Type 31', async () => {
+    const { token } = await start();
+    const r = await call(token, 'draft_purchase_entry', purchase({ credit_note: true, totals: { net: -100, vat: -21, gross: -121 }, lines: [{ gl_account_id: GL_COST, amount: -100, vat_code: '2' }] }));
+    expect(r.data.checks.every((c: any) => c.ok)).toBe(true);
+    expect(r.data.payload).toMatchObject({ Type: 31, PurchaseEntryLines: [{ AmountFC: -100 }] });
+  });
   it('takes an explicit ref part for the description', async () => {
     const { token } = await start();
     const r = await call(token, 'draft_purchase_entry', purchase({ description: { supplier: 'Acme', period: '2026-11', ref: 'A1', short: 'hosting' } }));
@@ -117,6 +123,9 @@ describe('draft_purchase_entry', () => {
     ['an unknown VAT code', { lines: [{ gl_account_id: GL_COST, amount: 100, vat_code: '77' }] }, 'vat_code_known'],
     ['a sales VAT code', { lines: [{ gl_account_id: GL_COST, amount: 100, vat_code: '5' }], totals: { net: 100, vat: 0, gross: 100 } }, 'vat_code_known'],
     ['VAT that does not match the lines', { totals: { net: 100, vat: 9, gross: 109 } }, 'vat_matches_lines'],
+    ['a credit note with a positive gross', { credit_note: true }, 'sign_matches_type'],
+    ['an invoice with a negative gross', { totals: { net: -100, vat: -21, gross: -121 }, lines: [{ gl_account_id: GL_COST, amount: -100, vat_code: '2' }] }, 'sign_matches_type'],
+    ['an invoice of zero', { totals: { net: 0, vat: 0, gross: 0 }, lines: [{ gl_account_id: GL_COST, amount: 0, vat_code: '2' }] }, 'sign_matches_type'],
   ])('refuses %s before any write', async (_n, over, check) => {
     const { token, st } = await start();
     const r = await call(token, 'draft_purchase_entry', { ...purchase(over), dry_run: false });

@@ -7,7 +7,7 @@ import { ExactError } from '../exact/errors.js';
 import { ENTRY_SELECT, entryShape, entryStatusName, findEntry } from './purchase.js';
 import { DescriptionError, renderDescription } from '../policy/description.js';
 import {
-  cents, checkBalanced, checkGross, checkLineSum, checkMatchBalanced, checkNoDuplicate, checkOneSide, checkVatCodes, checkVatTotal,
+  cents, checkBalanced, checkGross, checkSign, checkLineSum, checkMatchBalanced, checkNoDuplicate, checkOneSide, checkVatCodes, checkVatTotal,
   failed, normaliseRef, type Check, type VatCodeInfo,
 } from '../policy/validators.js';
 import { decideTier, type Tier } from '../policy/tiers.js';
@@ -263,6 +263,7 @@ export const draftPurchaseEntry = defineTool({
     const checks: Check[] = [
       checkLineSum(a.lines.map((l: any) => l.amount), a.totals.net),
       checkGross(a.totals.net, a.totals.vat, a.totals.gross),
+      checkSign(a.totals.gross, a.credit_note),
       checkVatCodes(a.lines.map((l: any) => l.vat_code), vat, 'purchase'),
       checkVatTotal(a.lines, a.totals.vat, vat),
       checkGlKnown(a.lines.map((l: any) => l.gl_account_id), gl),

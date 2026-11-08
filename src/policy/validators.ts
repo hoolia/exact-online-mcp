@@ -46,6 +46,13 @@ export function checkGross(net: number, vat: number, gross: number): Check {
   return { name: 'net_plus_vat_equals_gross', ok, message: ok ? `${eur(cents(net))} + ${eur(cents(vat))} = ${eur(cents(gross))}` : `net ${eur(cents(net))} + VAT ${eur(cents(vat))} is not gross ${eur(cents(gross))}` };
 }
 
+/** Purchase entry: an invoice has a positive gross, a credit note a negative one; zero is neither. */
+export function checkSign(gross: number, creditNote: boolean): Check {
+  const g = cents(gross);
+  const ok = creditNote ? g < 0 : g > 0;
+  return { name: 'sign_matches_type', ok, message: ok ? `${creditNote ? 'credit note' : 'invoice'} gross ${eur(g)}` : `${creditNote ? 'a credit note needs a negative' : 'an invoice needs a positive'} gross, got ${eur(g)}` };
+}
+
 export interface VatCodeInfo { code: string; percentage: number; blocked: boolean; use: 'P' | 'S' | 'B' | string }
 
 /** Every VAT code exists in the division, is not blocked and may be used for this kind of entry. */

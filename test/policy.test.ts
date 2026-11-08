@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  checkBalanced, checkGross, checkLineSum, checkMatchBalanced, checkNoDuplicate, checkOneSide, checkVatCodes, checkVatTotal, normaliseRef, type VatCodeInfo,
+  checkBalanced, checkGross, checkLineSum, checkSign, checkMatchBalanced, checkNoDuplicate, checkOneSide, checkVatCodes, checkVatTotal, normaliseRef, type VatCodeInfo,
 } from '../src/policy/validators.js';
 import { DescriptionError, checkTemplate, renderDescription, DEFAULT_DESCRIPTION_TEMPLATE as T } from '../src/policy/description.js';
 import { DEFAULT_TIER_POLICY, decideTier, type TierInput } from '../src/policy/tiers.js';
@@ -35,6 +35,13 @@ describe('validators', () => {
   it('net + VAT = gross', () => {
     expect(checkGross(100, 21, 121).ok).toBe(true);
     expect(checkGross(100, 21, 121.01).ok).toBe(false);
+  });
+  it('gross sign matches invoice or credit note', () => {
+    expect(checkSign(121, false).ok).toBe(true);
+    expect(checkSign(-121, true).ok).toBe(true);
+    expect(checkSign(121, true).ok).toBe(false);
+    expect(checkSign(-121, false).ok).toBe(false);
+    expect(checkSign(0.004, false).ok).toBe(false);
   });
   it('VAT code known, not blocked, usable for purchases', () => {
     expect(checkVatCodes(['2', '1'], VAT, 'purchase').ok).toBe(true);

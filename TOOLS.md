@@ -104,6 +104,7 @@ shortens `short`, then `supplier`, never `ref`.
 |---|---|---|
 | `line_sum_equals_net` | line amounts = `totals.net` | |
 | `net_plus_vat_equals_gross` | `net + vat = gross` | |
+| `sign_matches_type` | gross positive for an invoice, negative for a credit note (`credit_note: true`) | |
 | `vat_code_known` | code exists, not blocked, usable for purchases | code exists, not blocked |
 | `vat_matches_lines` | `totals.vat` = line `vat_amount` or amount x code percentage, 1 cent per line tolerance | |
 | `one_side_per_line`, `debit_equals_credit` | | one positive debit or credit per line; debit = credit, VAT on the side of its line |
