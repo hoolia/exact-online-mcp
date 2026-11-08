@@ -2,14 +2,14 @@ import type { Config } from '../config.js';
 import type { ToolDef } from './types.js';
 import { listDivisions, whoami } from './identity.js';
 import { getAccount, searchAccounts } from './crm.js';
-import { getProfitAndLoss, getRevenueByPeriod, listGlAccounts, listOpenPayables, listOpenReceivables, listTransactions } from './financial.js';
+import { getProfitAndLoss, getRevenueByPeriod, listGlAccountRgsMappings, listGlAccounts, listOpenPayables, listOpenReceivables, listTransactions } from './financial.js';
 import { getSalesInvoice, listPurchaseEntries, listSalesInvoices, searchItems } from './sales.js';
 import { createQuotation, createSalesInvoice, createSalesOrder } from './write.js';
 import { attachDocument, draftPurchaseEntry, getPurchaseEntry, listBankTransactionLines, listDocumentTypes, listJournals, listVatCodes } from './purchase.js';
 
 export const readTools: ToolDef[] = [
   whoami, listDivisions, searchAccounts, getAccount, listOpenReceivables, listOpenPayables, listSalesInvoices, getSalesInvoice,
-  listPurchaseEntries, getPurchaseEntry, searchItems, listGlAccounts, listVatCodes, listJournals, listDocumentTypes, getProfitAndLoss,
+  listPurchaseEntries, getPurchaseEntry, searchItems, listGlAccounts, listGlAccountRgsMappings, listVatCodes, listJournals, listDocumentTypes, getProfitAndLoss,
   getRevenueByPeriod, listTransactions, listBankTransactionLines,
 ];
 export const writeTools: ToolDef[] = [createSalesOrder, createSalesInvoice, createQuotation, draftPurchaseEntry, attachDocument];

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { defineTool } from './types.js';
+import { defineTool, type ToolContext } from './types.js';
 import { divisionField, fmt, guidField, isoDate, readOnly, round2, todayIso, topField, totalsByCurrency, totalsText } from './common.js';
 import { and, date, guid, str } from '../exact/odata.js';
 
@@ -68,16 +68,78 @@ function makeOpenList(kind: 'receivables' | 'payables') {
 export const listOpenReceivables = makeOpenList('receivables');
 export const listOpenPayables = makeOpenList('payables');
 
+const RGS_SELECT = ['ID', 'GLAccount', 'GLAccountCode', 'GLAccountDescription', 'Classification', 'ClassificationCode', 'ClassificationDescription', 'GLSchemeID', 'GLSchemeCode', 'GLSchemeDescription'];
+const schemeMatches = (m: any, scheme: string) => `${m.GLSchemeCode ?? ''} ${m.GLSchemeDescription ?? ''}`.toLowerCase().includes(scheme.toLowerCase());
+const rgsShape = (m: any) => ({
+  gl_account_id: m.GLAccount, gl_account: m.GLAccountCode?.trim(), gl_description: m.GLAccountDescription,
+  rgs_code: m.ClassificationCode?.trim(), rgs_description: m.ClassificationDescription, classification_id: m.Classification,
+  scheme_code: m.GLSchemeCode?.trim(), scheme_description: m.GLSchemeDescription,
+});
+
+/** Classification mappings of the given G/L accounts (15 per request). */
+async function mappingsFor(ctx: ToolContext, division: number | undefined, glIds: string[]) {
+  const out: any[] = [];
+  for (let i = 0; i < glIds.length; i += 15) {
+    const chunk = glIds.slice(i, i + 15);
+    const { rows } = await ctx.exact.list('financial/GLAccountClassificationMappings', { select: RGS_SELECT, filter: chunk.map((g) => `GLAccount eq ${guid(g)}`).join(' or ') }, { division, maxRows: 500, maxPages: 10 });
+    out.push(...rows);
+  }
+  return out;
+}
+
 export const listGlAccounts = defineTool({
   name: 'list_gl_accounts',
   title: 'List G/L accounts',
-  description: 'Lists general ledger accounts (code, description, type). Filter by text in code/description. Use to find GL account ids/codes for list_transactions.',
-  inputSchema: { query: z.string().min(1).max(100).optional().describe('Text contained in the description, or a code prefix.'), division: divisionField, top: topField(100, 500) },
+  description: 'Lists general ledger accounts (code, description, type). Filter by text in code/description. Use to find GL account ids/codes for list_transactions and the write tools. include_rgs adds the RGS code of each account (one extra call per 15 accounts).',
+  inputSchema: {
+    query: z.string().min(1).max(100).optional().describe('Text contained in the description, or a code prefix.'),
+    include_rgs: z.boolean().default(false).describe('Add rgs_code and rgs_description from the RGS classification mapping.'),
+    rgs_scheme: z.string().min(1).max(50).default('RGS').describe('Text contained in the G/L scheme code or description that identifies the RGS scheme.'),
+    division: divisionField, top: topField(100, 500),
+  },
   annotations: readOnly,
   async run(ctx, a) {
     const filter = a.query ? `substringof(${str(a.query)}, Description) eq true or startswith(Code, ${str(a.query)}) eq true` : undefined;
     const { rows, truncated } = await ctx.exact.list('financial/GLAccounts', { select: ['ID', 'Code', 'Description', 'Type', 'TypeDescription', 'BalanceSide', 'BalanceType'], filter, orderby: 'Code' }, { division: a.division, maxRows: a.top });
-    return { summary: `Found ${rows.length} G/L account(s)${truncated ? ' (more exist)' : ''}.`, data: rows.map((g: any) => ({ id: g.ID, code: g.Code?.trim(), description: g.Description, type: g.TypeDescription ?? g.Type, balance_side: g.BalanceSide, balance_type: g.BalanceType })) };
+    const rgs = new Map<string, any>();
+    if (a.include_rgs && rows.length) {
+      for (const m of await mappingsFor(ctx, a.division, rows.map((g: any) => g.ID))) {
+        if (schemeMatches(m, a.rgs_scheme)) rgs.set(String(m.GLAccount).toLowerCase(), m);
+      }
+    }
+    return {
+      summary: `Found ${rows.length} G/L account(s)${truncated ? ' (more exist)' : ''}${a.include_rgs ? `, ${rgs.size} with an RGS code` : ''}.`,
+      data: rows.map((g: any) => {
+        const m = rgs.get(String(g.ID).toLowerCase());
+        return {
+          id: g.ID, code: g.Code?.trim(), description: g.Description, type: g.TypeDescription ?? g.Type, balance_side: g.BalanceSide, balance_type: g.BalanceType,
+          ...(a.include_rgs ? { rgs_code: m?.ClassificationCode?.trim() ?? null, rgs_description: m?.ClassificationDescription ?? null } : {}),
+        };
+      }),
+    };
+  },
+});
+
+export const listGlAccountRgsMappings = defineTool({
+  name: 'list_gl_account_rgs_mappings',
+  title: 'List G/L account RGS mappings',
+  description: "Lists how the division's G/L accounts map to RGS (Referentie GrootboekSchema) codes: G/L account, RGS code and description, scheme. Filter by G/L account or by RGS code prefix (e.g. \"WBedHui\" for housing costs). Use to pick the G/L account for a cost type.",
+  inputSchema: {
+    gl_account_id: guidField('Only this G/L account (GUID).').optional(),
+    gl_account_code: z.string().min(1).max(20).optional().describe('Only this G/L account code.'),
+    rgs_code_prefix: z.string().min(1).max(30).optional().describe('Only RGS codes starting with this text.'),
+    rgs_scheme: z.string().min(1).max(50).default('RGS').describe('Text contained in the G/L scheme code or description that identifies the RGS scheme.'),
+    division: divisionField, top: topField(200, 2000),
+  },
+  annotations: readOnly,
+  async run(ctx, a) {
+    const filter = and([
+      a.gl_account_id && `GLAccount eq ${guid(a.gl_account_id)}`, a.gl_account_code && `GLAccountCode eq ${str(a.gl_account_code)}`,
+      a.rgs_code_prefix && `startswith(ClassificationCode, ${str(a.rgs_code_prefix)}) eq true`,
+    ]);
+    const { rows, truncated } = await ctx.exact.list('financial/GLAccountClassificationMappings', { select: RGS_SELECT, filter, orderby: 'GLAccountCode' }, { division: a.division, maxRows: a.top, maxPages: 40 });
+    const hits = rows.filter((m: any) => schemeMatches(m, a.rgs_scheme));
+    return { summary: `Found ${hits.length} RGS mapping(s)${truncated ? ' (more exist; narrow the filters)' : ''}.`, data: { truncated, mappings: hits.map(rgsShape) } };
   },
 });
 
