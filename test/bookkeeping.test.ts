@@ -200,6 +200,20 @@ describe('draft_purchase_entry', () => {
     expect(r.data.tier).toBe('approve');
     expect(r.data.tier_reasons.join()).toContain('0 earlier entries');
   });
+  it('rates offsetting lines on their volume, not on their small net', async () => {
+    const { token } = await start();
+    for (let i = 1; i <= 3; i++) {
+      const id = await ledger.reserve({ division: 100, kind: 'purchase', supplierId: SUPPLIER, refNorm: `OLD${i}`, journal: '60', entryDate: `2026-0${i}-01`, currency: 'EUR', amountCents: i, pdfSha256: null, tier: 'approve', tierReasons: [], createdBy: 'x', createdAt: new Date(T0), holdUntil: null });
+      await ledger.markDrafted(id, `00000000-0000-0000-0000-00000000000${i}`, i);
+      await ledger.markReleased(id, 'approved', ['alice'], new Date(T0));
+    }
+    const lines = [{ gl_account_id: GL_COST, amount: 10000, vat_code: '2', vat_amount: 21 }, { gl_account_id: GL_COST, amount: -9900, vat_code: '2', vat_amount: 0 }];
+    const big = await call(token, 'draft_purchase_entry', purchase({ lines }));
+    expect(big.data.tier).toBe('two-step');
+    const small = await call(token, 'draft_purchase_entry', purchase({ totals: { net: 100, vat: 21, gross: 121 }, lines: [{ gl_account_id: GL_COST, amount: 110, vat_code: '2', vat_amount: 23.1 }, { gl_account_id: GL_COST, amount: -10, vat_code: '2', vat_amount: -2.1 }] }));
+    expect(small.data.tier).toBe('approve');
+    expect(small.data.tier_reasons.join()).toContain('both positive and negative');
+  });
   it('is two-step above 5,000 EUR and for a balance account off the allow-list', async () => {
     const { token } = await start();
     const big = await call(token, 'draft_purchase_entry', purchase({ totals: { net: 5000, vat: 1050, gross: 6050 }, lines: [{ gl_account_id: GL_COST, amount: 5000, vat_code: '2' }] }));

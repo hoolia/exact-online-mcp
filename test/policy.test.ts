@@ -103,6 +103,7 @@ describe('approval tiers', () => {
     expect(tier({ duplicate: true })).toBe('approve');
     expect(tier({ currency: 'USD' })).toBe('approve');
     expect(tier({ kind: 'general_journal' })).toBe('approve');
+    expect(tier({ mixedSigns: true })).toBe('approve');
   });
   it('two-step for match sets, payroll, large amounts and balance accounts off the allow-list', () => {
     expect(tier({ kind: 'matchset' })).toBe('two_step');

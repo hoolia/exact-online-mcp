@@ -269,8 +269,11 @@ export const draftPurchaseEntry = defineTool({
       checkNoDuplicate(duplicates),
     ];
     const supplierEntries = await ledger.supplierEntryCount(div, a.supplier_id);
+    // offsetting lines (+10,000 and -9,900) must not rate as their small net
+    const volume = a.lines.reduce((s: number, l: any) => s + Math.abs(l.amount), 0) + Math.abs(a.totals.vat);
+    const mixedSigns = a.lines.some((l: any) => l.amount > 0) && a.lines.some((l: any) => l.amount < 0);
     const { tier, reasons } = decideTier({
-      kind: 'purchase', amount: a.totals.gross, currency: ledgerKey.currency, journal: a.journal, supplierEntries,
+      kind: 'purchase', amount: Math.max(Math.abs(a.totals.gross), volume), currency: ledgerKey.currency, journal: a.journal, supplierEntries, mixedSigns,
       balanceAccounts: a.lines.map((l: any) => gl.get(l.gl_account_id.toLowerCase())).filter((g: any) => g?.balance).map((g: any) => g.code),
       validatorsGreen: !failed(checks).length, duplicate: duplicates.length > 0,
     }, ctx.config.tiers);
