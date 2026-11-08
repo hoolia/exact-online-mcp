@@ -82,6 +82,15 @@ export function checkVatTotal(lines: { amount: number; vat_code: string; vat_amo
   return { name: 'vat_matches_lines', ok, message: ok ? `VAT ${eur(cents(vat))} matches the lines` : `the lines give VAT ${eur(expected)}, the invoice says ${eur(cents(vat))}` };
 }
 
+/** Line numbers whose own vat_amount differs by more than a cent from amount times the code percentage. */
+export function vatOverrides(lines: { amount: number; vat_code: string; vat_amount?: number }[], known: Map<string, VatCodeInfo>): number[] {
+  return lines.map((l, i) => {
+    if (l.vat_amount === undefined) return 0;
+    const pct = known.get(l.vat_code.trim())?.percentage ?? 0;
+    return Math.abs(cents(l.vat_amount) - Math.round(cents(l.amount) * pct)) > 1 ? i + 1 : 0;
+  }).filter(Boolean);
+}
+
 /** The ledger holds no entry this one duplicates. */
 export function checkNoDuplicate(existing: { exactEntryId: string | null; exactEntryNumber: number | null; status: string }[]): Check {
   const ok = existing.length === 0;

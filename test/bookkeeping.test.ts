@@ -223,6 +223,18 @@ describe('draft_purchase_entry', () => {
     expect(small.data.tier).toBe('approve');
     expect(small.data.tier_reasons.join()).toContain('both positive and negative');
   });
+  it('keeps a line VAT amount that differs from its code out of the auto tier', async () => {
+    const { token } = await start();
+    for (let i = 1; i <= 3; i++) {
+      const id = await ledger.reserve({ division: 100, kind: 'purchase', supplierId: SUPPLIER, refNorm: `OLD${i}`, journal: '60', entryDate: `2026-0${i}-01`, currency: 'EUR', amountCents: i, pdfSha256: null, tier: 'approve', tierReasons: [], createdBy: 'x', createdAt: new Date(T0), holdUntil: null });
+      await ledger.markDrafted(id, `00000000-0000-0000-0000-00000000000${i}`, i);
+      await ledger.markReleased(id, 'approved', ['alice'], new Date(T0));
+    }
+    const r = await call(token, 'draft_purchase_entry', purchase({ totals: { net: 100, vat: 0, gross: 100 }, lines: [{ gl_account_id: GL_COST, amount: 100, vat_code: '2', vat_amount: 0 }] }));
+    expect(r.data.checks.every((c: any) => c.ok)).toBe(true);
+    expect(r.data.tier).toBe('approve');
+    expect(r.data.tier_reasons.join()).toContain('differs from the VAT code percentage');
+  });
   it('is two-step above 5,000 EUR and for a balance account off the allow-list', async () => {
     const { token } = await start();
     const big = await call(token, 'draft_purchase_entry', purchase({ totals: { net: 5000, vat: 1050, gross: 6050 }, lines: [{ gl_account_id: GL_COST, amount: 5000, vat_code: '2' }] }));

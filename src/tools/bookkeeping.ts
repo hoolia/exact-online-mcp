@@ -8,7 +8,7 @@ import { ENTRY_SELECT, entryShape, entryStatusName, findEntry } from './purchase
 import { DescriptionError, renderDescription } from '../policy/description.js';
 import {
   cents, checkBalanced, checkGross, checkSign, checkLineSum, checkMatchBalanced, checkNoDuplicate, checkOneSide, checkVatCodes, checkVatTotal,
-  failed, normaliseRef, type Check, type VatCodeInfo,
+  failed, normaliseRef, vatOverrides, type Check, type VatCodeInfo,
 } from '../policy/validators.js';
 import { decideTier, type Tier } from '../policy/tiers.js';
 import { checkApprovals, contractTier } from '../policy/approval.js';
@@ -274,7 +274,7 @@ export const draftPurchaseEntry = defineTool({
     const volume = a.lines.reduce((s: number, l: any) => s + Math.abs(l.amount), 0) + Math.abs(a.totals.vat);
     const mixedSigns = a.lines.some((l: any) => l.amount > 0) && a.lines.some((l: any) => l.amount < 0);
     const { tier, reasons } = decideTier({
-      kind: 'purchase', amount: Math.max(Math.abs(a.totals.gross), volume), currency: ledgerKey.currency, journal: a.journal, supplierEntries, mixedSigns,
+      kind: 'purchase', amount: Math.max(Math.abs(a.totals.gross), volume), currency: ledgerKey.currency, journal: a.journal, supplierEntries, mixedSigns, vatOverrides: vatOverrides(a.lines, vat),
       balanceAccounts: a.lines.map((l: any) => gl.get(l.gl_account_id.toLowerCase())).filter((g: any) => g?.balance).map((g: any) => g.code),
       validatorsGreen: !failed(checks).length, duplicate: duplicates.length > 0,
     }, ctx.config.tiers);

@@ -119,7 +119,7 @@ POST, so two concurrent calls cannot both write.
 
 | Tier | When | `process_entry` needs |
 |---|---|---|
-| `auto` | purchase entry in EUR, amount below `TIER_AUTO_MAX_EUR`, no lines of opposite sign, supplier with `TIER_AUTO_MIN_SUPPLIER_ENTRIES` earlier approved or processed ledger entries, all checks green, no duplicate | nothing, after `TIER_AUTO_HOLD_HOURS` |
+| `auto` | purchase entry in EUR, amount below `TIER_AUTO_MAX_EUR`, no lines of opposite sign, every line `vat_amount` within a cent of amount x code percentage, supplier with `TIER_AUTO_MIN_SUPPLIER_ENTRIES` earlier approved or processed ledger entries, all checks green, no duplicate | nothing, after `TIER_AUTO_HOLD_HOURS` |
 | `approve` | every other purchase and general journal entry | one approval token |
 | `two_step` | match sets, a journal in `TIER_PAYROLL_JOURNALS`, amount above `TIER_TWO_STEP_ABOVE_EUR`, a balance sheet G/L account not in `TIER_BALANCE_ACCOUNT_ALLOWLIST` | two approval tokens from different approvers |
 

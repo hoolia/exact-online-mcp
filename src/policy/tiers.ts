@@ -26,6 +26,8 @@ export interface TierInput {
   amount: number;
   /** purchase lines with both positive and negative amounts */
   mixedSigns?: boolean;
+  /** line numbers whose given VAT amount differs from the VAT code percentage */
+  vatOverrides?: number[];
   currency: string;
   journal: string;
   supplierEntries: number;
@@ -48,6 +50,7 @@ export function decideTier(i: TierInput, p: TierPolicy): { tier: Tier; reasons: 
   const notAuto: string[] = [];
   if (i.kind !== 'purchase') notAuto.push('only purchase entries can be automatic');
   if (i.mixedSigns) notAuto.push('lines have both positive and negative amounts');
+  if (i.vatOverrides?.length) notAuto.push(`line(s) ${i.vatOverrides.join(', ')} have a VAT amount that differs from the VAT code percentage`);
   if (i.currency !== 'EUR') notAuto.push(`currency ${i.currency} is not EUR`);
   if (!(Math.abs(i.amount) < p.autoMaxEur)) notAuto.push(`amount ${Math.abs(i.amount).toFixed(2)} is not below ${p.autoMaxEur}`);
   if (i.supplierEntries < p.autoMinSupplierEntries) notAuto.push(`supplier has ${i.supplierEntries} earlier entr${i.supplierEntries === 1 ? 'y' : 'ies'}, automatic needs ${p.autoMinSupplierEntries}`);

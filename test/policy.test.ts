@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  checkBalanced, checkGross, checkLineSum, checkSign, checkMatchBalanced, checkNoDuplicate, checkOneSide, checkVatCodes, checkVatTotal, normaliseRef, type VatCodeInfo,
+  checkBalanced, checkGross, checkLineSum, checkSign, checkMatchBalanced, checkNoDuplicate, checkOneSide, checkVatCodes, checkVatTotal, normaliseRef, vatOverrides, type VatCodeInfo,
 } from '../src/policy/validators.js';
 import { DescriptionError, checkTemplate, renderDescription, DEFAULT_DESCRIPTION_TEMPLATE as T } from '../src/policy/description.js';
 import { DEFAULT_TIER_POLICY, decideTier, type TierInput } from '../src/policy/tiers.js';
@@ -35,6 +35,10 @@ describe('validators', () => {
   it('net + VAT = gross', () => {
     expect(checkGross(100, 21, 121).ok).toBe(true);
     expect(checkGross(100, 21, 121.01).ok).toBe(false);
+  });
+  it('finds line VAT amounts that differ from the code percentage', () => {
+    expect(vatOverrides([{ amount: 100, vat_code: '2', vat_amount: 21.01 }, { amount: 100, vat_code: '2' }], VAT)).toEqual([]);
+    expect(vatOverrides([{ amount: 100, vat_code: '2', vat_amount: 0 }, { amount: -10, vat_code: '2', vat_amount: -2.1 }], VAT)).toEqual([1]);
   });
   it('gross sign matches invoice or credit note', () => {
     expect(checkSign(121, false).ok).toBe(true);
@@ -111,6 +115,8 @@ describe('approval tiers', () => {
     expect(tier({ currency: 'USD' })).toBe('approve');
     expect(tier({ kind: 'general_journal' })).toBe('approve');
     expect(tier({ mixedSigns: true })).toBe('approve');
+    expect(tier({ vatOverrides: [1] })).toBe('approve');
+    expect(tier({ vatOverrides: [] })).toBe('auto');
   });
   it('two-step for match sets, payroll, large amounts and balance accounts off the allow-list', () => {
     expect(tier({ kind: 'matchset' })).toBe('two_step');
