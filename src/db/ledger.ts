@@ -1,6 +1,6 @@
 import { transaction, type PoolLike } from './pg.js';
 
-export type EntryKind = 'purchase' | 'general_journal';
+export type EntryKind = 'purchase' | 'sales' | 'general_journal';
 /** unknown: the POST to Exact failed in a way that may still have created the entry; the key stays taken */
 export type LedgerStatus = 'reserved' | 'unknown' | 'drafted' | 'approved' | 'processed';
 
@@ -77,7 +77,7 @@ const toRow = (r: any): LedgerRow => ({
 });
 
 export const dedupeKey = (r: { kind: EntryKind; supplierId: string | null; journal: string; refNorm: string }) =>
-  r.kind === 'purchase' ? `purchase|${r.supplierId!.toLowerCase()}|${r.refNorm}` : `general_journal|${r.journal}|${r.refNorm}`;
+  r.kind === 'general_journal' ? `general_journal|${r.journal}|${r.refNorm}` : `${r.kind}|${r.supplierId!.toLowerCase()}|${r.refNorm}`;
 
 const addDays = (isoDate: string, n: number) => new Date(Date.parse(`${isoDate}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
 
@@ -93,10 +93,10 @@ export class PgStore {
     const params: unknown[] = [q.division, dedupeKey(q)];
     const ors = ['dedupe_key = $2'];
     if (q.pdfSha256) { params.push(q.pdfSha256); ors.push(`pdf_sha256 = $${params.length}`); }
-    if (q.kind === 'purchase' && q.supplierId) {
+    if ((q.kind === 'purchase' || q.kind === 'sales') && q.supplierId) {
       params.push(q.supplierId.toLowerCase(), q.amountCents, addDays(q.entryDate, -q.windowDays), addDays(q.entryDate, q.windowDays));
       const n = params.length;
-      ors.push(`(kind = 'purchase' AND supplier_id = $${n - 3} AND amount_cents = $${n - 2} AND entry_date >= $${n - 1} AND entry_date <= $${n})`);
+      ors.push(`(kind = '${q.kind}' AND supplier_id = $${n - 3} AND amount_cents = $${n - 2} AND entry_date >= $${n - 1} AND entry_date <= $${n})`);
     }
     const { rows } = await this.pool.query(`SELECT * FROM ledger WHERE division = $1 AND (${ors.join(' OR ')}) ORDER BY id`, params);
     return rows.map(toRow);

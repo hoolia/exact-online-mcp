@@ -9,7 +9,7 @@ never silently rounded; totals are grouped per currency. Dates are ISO 8601. All
 
 | Tool | Exact resource | Parameters | Notes |
 |---|---|---|---|
-| `whoami` | `current/Me` | – | name, email, region, current division |
+| `whoami` | `current/Me` | – | name, email, region, `default_division` (the one tools use), `exact_web_division` (last opened in the web app, unused) |
 | `list_divisions` | `system/Divisions` | `include_inactive` | code, name, status, currency |
 | `search_accounts` | `crm/Accounts` | `query`, `code`, `city`, `vat_number`, `kind` (customer/supplier/any), `top` | criteria are ANDed |
 | `get_account` | `crm/Accounts(guid)` + `crm/Contacts` | `account_id` | main contact first |
@@ -29,6 +29,18 @@ never silently rounded; totals are grouped per currency. Dates are ISO 8601. All
 | `get_revenue_by_period` | `read/financial/RevenueListByYear` | `year` | revenue per period + total |
 | `list_transactions` | `financialtransaction/TransactionLines` | `date_from`, `date_to` (required), `gl_account_id` and/or `account_id` (one required), `top` (max 200) | debit positive |
 | `list_bank_transaction_lines` | `financialtransaction/BankEntryLines` | `date_from`, `date_to` (required), `account_id`, `gl_account_id`, `description`, `amount_min`, `amount_max`, `top` (max 500) | bank and payment service journals |
+| `get_trial_balance` | `bulk/Financial/TransactionLines`, `financial/GLAccounts`, `financial/FinancialPeriods` | `year`, `period` (default: today), `processed_only` | per G/L account: opening (balance accounts), debit, credit, closing; `result_earlier_years`; closing sums to 0 |
+| `get_balance_sheet` | same | same | balance accounts with balance, per category, total debit and credit, result earlier years and current year (profit positive), `difference` (0 when it balances) |
+| `list_financial_periods` | `financial/FinancialPeriods` | `year` | start and end per period |
+| `list_cost_centers` | `hrm/Costcenters` | `include_inactive` | code, description |
+| `list_payment_conditions` | `cashflow/PaymentConditions` | `query` | code, description, days |
+| `list_sales_entries` | `salesentry/SalesEntries` | `date_from`, `date_to`, `customer_id`, `status` (open/processed), `your_ref` | financial sales journal entries, newest first |
+| `get_sales_entry` | `SalesEntries(guid)` + `SalesEntryLines` | `entry_id` or `entry_number` | with lines |
+| `list_general_journal_entries` | `generaljournalentry/GeneralJournalEntries` | `year`, `period`, `journal`, `status` | memoriaal entries |
+| `get_general_journal_entry` | `GeneralJournalEntries(guid)` + `GeneralJournalEntryLines` | `entry_id` or `entry_number` | lines, debit positive |
+| `list_documents` | `documents/Documents` | `account_id`, `type`, `subject`, `created_from` | newest first |
+| `get_document` | `Documents(guid)` + `DocumentAttachments` | `document_id`, `download_attachment_id?` | attachments; the downloaded file as `content_base64` (Exact host only, up to `MAX_ATTACHMENT_MB`) |
+| `query_exact` | any `<area>/<Resource>` | `resource`, `select[]`, `filter?`, `orderby?`, `top` (max 1000) | GET only, for resources without a dedicated tool |
 
 ### Example: `list_open_receivables { "min_days_overdue": 30 }`
 
@@ -70,12 +82,15 @@ when actually posted. Claude is instructed to show the dry-run to the user and o
 | `create_sales_order` | `salesorder/SalesOrders` | `customer_id`, `lines[{item_id, quantity, unit_price?, description?}]`, `description`, `your_ref`, `order_date`, `delivery_date` |
 | `create_sales_invoice` | `salesinvoice/SalesInvoices` | `customer_id`, `journal`, `lines[... + gl_account_id?]`, `description`, `your_ref`, `invoice_date`. Always a **draft** (Status 10); never sent. |
 | `create_quotation` | `crm/Quotations` | `customer_id`, `lines[...]`, `description`, `quotation_date`, `valid_until` |
+| `create_account` | `crm/Accounts` (+ `crm/BankAccounts`) | `name`, `supplier` (default true), `customer`, `email?`, `phone?`, `address_line?`, `postcode?`, `city?`, `country?`, `vat_number?`, `chamber_of_commerce?`, `payment_condition_purchase?`, `payment_condition_sales?`, `purchase_vat_code?`, `sales_vat_code?`, `gl_account_purchase_id?`, `gl_account_sales_id?`, `iban?`. Refused when a relation with the same name, VAT or chamber of commerce number exists, or when the IBAN fails its check digits or belongs to another relation. |
+| `update_account` | `PUT crm/Accounts(guid)` (+ `crm/BankAccounts`) | `account_id`, any field of `create_account`, `supplier?`, `customer?`, `blocked?`, `add_iban?`. Only the given fields change; the dry run shows before and after. A VAT or chamber of commerce number of another relation is refused. `add_iban` only for a relation without a bank account: a changed or extra IBAN is refused (invoice fraud pattern), a person changes it in Exact. `customer: false` ends only a customer status. |
 
 ## Bookkeeping write tools (also need `DATABASE_URL`)
 
 | Tool | Resource | Parameters | Also needs |
 |---|---|---|---|
 | `draft_purchase_entry` | `purchaseentry/PurchaseEntries` (+ `documents/Documents`, `DocumentAttachments` with `file`) | `supplier_id`, `journal`, `your_ref` (supplier invoice number), `entry_date`, `due_date?`, `description{supplier, period, ref?, short}`, `currency` (default EUR), `totals{net, vat, gross}`, `payment_reference?`, `credit_note`, `lines[{gl_account_id, amount (excl. VAT), vat_code, vat_amount?, description?, cost_center?}]`, `file?{file_name, content_base64 \| file_url, document_type}`, `document_sha256?` | |
+| `draft_sales_entry` | `salesentry/SalesEntries` (+ `documents/Documents`, `DocumentAttachments` with `file`) | `customer_id`, `journal`, `your_ref` (number of the source document), `entry_date`, `due_date?`, `description{supplier, period, ref?, short}`, `currency`, `totals{net, vat, gross}`, `payment_reference?`, `credit_note`, `lines[{gl_account_id, amount (excl. VAT), vat_code, vat_amount?, description?, cost_center?}]`, `file?` | |
 | `draft_general_journal_entry` | `generaljournalentry/GeneralJournalEntries` | `journal`, `entry_date`, `reference`, `description{supplier, period, ref?, short}`, `currency`, `financial_year?`, `financial_period?`, `reversal`, `lines[{gl_account_id, debit \| credit, vat_code?, vat_amount?, account_id?, cost_center?, cost_unit?, short?}]`, `file?` | |
 | `attach_document` | `documents/Documents`, `DocumentAttachments`, `PUT PurchaseEntries(guid)` | `entry_id`, `file_name`, `content_base64` or `file_url` (https), `subject?`, `document_type` (default 20) | |
 | `process_entry` | `GET` entry, with `EXACT_PROCESS_MODE=api` `PUT PurchaseEntries(guid) {Status: 50}` | `draftId` (or `entry_id`), `answer` (text or two texts), `approvalToken` and/or `approval_tokens[]` | `APPROVAL_SIGNING_KEY` |
@@ -103,7 +118,7 @@ has at most two decimals; an amount with more is rejected as invalid input, so E
 
 | Check | Purchase | General journal |
 |---|---|---|
-| `line_sum_equals_net` | line amounts = `totals.net` | |
+| `line_sum_equals_net` | line amounts = `totals.net` (also sales) | |
 | `net_plus_vat_equals_gross` | `net + vat = gross` | |
 | `sign_matches_type` | gross positive for an invoice, negative for a credit note (`credit_note: true`) | |
 | `vat_code_known` | code exists, not blocked, usable for purchases | code exists, not blocked |

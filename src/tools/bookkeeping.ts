@@ -5,6 +5,7 @@ import { divisionField, guidField, isoDate, trimCode } from './common.js';
 import { guid, str } from '../exact/odata.js';
 import { ExactError } from '../exact/errors.js';
 import { ENTRY_SELECT, entryShape, entryStatusName, findEntry } from './purchase.js';
+import { SALES_ENTRY_SELECT, salesEntryShape } from './entries.js';
 import { DescriptionError, renderDescription } from '../policy/description.js';
 import {
   cents, checkBalanced, checkGross, checkSign, checkLineSum, checkMatchBalanced, checkNoDuplicate, checkOneSide, checkVatCodes, checkVatTotal,
@@ -305,6 +306,78 @@ export const draftPurchaseEntry = defineTool({
   },
 });
 
+// --- draft_sales_entry ---
+
+const salesLine = z.object({
+  gl_account_id: guidField('Revenue or balance G/L account GUID (list_gl_accounts).'),
+  amount: money().describe('Line amount EXCLUDING VAT, in the entry currency. Negative on a credit note.'),
+  vat_code: z.string().min(1).max(8).describe('VAT code (list_vat_codes use=sales).'),
+  vat_amount: money().optional().describe('VAT of the line when it differs from amount times the code percentage.'),
+  description: z.string().max(60).optional().describe('Line text; omitted: the entry description.'),
+  cost_center: z.string().max(8).optional(),
+});
+
+export const draftSalesEntry = defineTool({
+  name: 'draft_sales_entry',
+  title: 'Draft sales entry',
+  description: 'Drafts a sales entry in a financial sales journal (verkoopboeking) that stays OPEN (Status 20) for review: for revenue documented outside the Exact invoicing module, such as a self-billing invoice a customer issued or an invoice from another invoicing system. For an invoice Exact itself must issue, use create_sales_invoice. The checks of draft_purchase_entry run before writing (lines = net, net + VAT = gross, VAT codes usable for sales, VAT matches the lines, G/L accounts known, no duplicate of customer and your_ref in the ledger or in Exact). Always the approve or two-step tier. Optionally uploads the source document and links it. WRITES to Exact Online; dry_run first.',
+  inputSchema: {
+    customer_id: guidField('Customer account GUID (search_accounts kind=customer).'),
+    journal: z.string().min(1).max(10).describe('Sales journal code (list_journals kind=sales).'),
+    your_ref: z.string().min(1).max(60).describe('Number of the source document (e.g. the self-billing invoice number); also {ref} of the description.'),
+    entry_date: isoDate('Invoice date.'),
+    due_date: isoDate('Due date; omitted: from the payment condition.').optional(),
+    description: descriptionParts,
+    currency: z.string().length(3).default('EUR'),
+    totals: z.object({ net: money(), vat: money(), gross: money() }).describe('Totals as printed: net (excl. VAT), VAT, gross. Negative on a credit note.'),
+    payment_reference: z.string().max(50).optional(),
+    credit_note: z.boolean().default(false).describe('true: sales credit note (Type 21).'),
+    lines: z.array(salesLine).min(1).max(50),
+    file: fileInput.extend({ document_type: z.number().int().positive().default(10).describe('Document type id (list_document_types); 10 = sales invoice.') }).optional().describe('The source document: uploaded as a document of the customer and linked. Its SHA-256 joins the duplicate check.'),
+    division: divisionField, dry_run: dryRun,
+  },
+  annotations: writeAnnotations,
+  async run(ctx, a) {
+    const ledger = requireLedger(ctx);
+    const div = await ctx.exact.resolveDivision(a.division);
+    const description = describe(ctx, a.description, a.your_ref);
+    const file = a.file ? await loadFile(ctx, a.file) : null;
+    const [vat, gl] = await Promise.all([vatCodeTable(ctx, div), glAccounts(ctx, div, a.lines.map((l: any) => l.gl_account_id))]);
+    const ledgerKey = { supplierId: a.customer_id, journal: a.journal.trim(), refNorm: normaliseRef(a.your_ref), amountCents: cents(a.totals.gross), entryDate: a.entry_date, currency: a.currency.toUpperCase(), pdfSha256: file?.sha256 ?? null };
+    const duplicates = await ledger.findDuplicates({ division: div, kind: 'sales', ...ledgerKey, windowDays: ctx.config.duplicateWindowDays });
+    const { rows: exactDup } = await ctx.exact.list('salesentry/SalesEntries', { select: SALES_ENTRY_SELECT, filter: `Customer eq ${guid(a.customer_id)} and YourRef eq ${str(a.your_ref)}` }, { division: div, maxRows: 5, maxPages: 1 });
+    if (exactDup.length) {
+      return refused(`document ${a.your_ref} is already booked in Exact as sales entry ${exactDup[0].EntryNumber}.`, { duplicate: true, division: div, existing: exactDup.map(salesEntryShape) });
+    }
+    const checks: Check[] = [
+      checkLineSum(a.lines.map((l: any) => l.amount), a.totals.net),
+      checkGross(a.totals.net, a.totals.vat, a.totals.gross),
+      checkSign(a.totals.gross, a.credit_note),
+      checkVatCodes(a.lines.map((l: any) => l.vat_code), vat, 'sales'),
+      checkVatTotal(a.lines, a.totals.vat, vat),
+      checkGlKnown(a.lines.map((l: any) => l.gl_account_id), gl),
+      checkNoDuplicate(duplicates),
+    ];
+    const volume = a.lines.reduce((s: number, l: any) => s + Math.abs(l.amount), 0) + Math.abs(a.totals.vat);
+    const { tier, reasons } = decideTier({
+      kind: 'sales', amount: Math.max(Math.abs(a.totals.gross), volume), currency: ledgerKey.currency, journal: a.journal, supplierEntries: 0,
+      balanceAccounts: a.lines.map((l: any) => gl.get(l.gl_account_id.toLowerCase())).filter((g: any) => g?.balance).map((g: any) => g.code),
+      validatorsGreen: !failed(checks).length, duplicate: duplicates.length > 0,
+    }, ctx.config.tiers);
+    const body = compact({
+      Journal: a.journal, Customer: a.customer_id, YourRef: a.your_ref, EntryDate: a.entry_date, DueDate: a.due_date, Description: description,
+      Currency: ledgerKey.currency, PaymentReference: a.payment_reference, Type: a.credit_note ? 21 : 20,
+      SalesEntryLines: a.lines.map((l: any) => compact({ GLAccount: l.gl_account_id, AmountFC: l.amount, VATCode: l.vat_code, VATAmountFC: l.vat_amount, Description: l.description ?? description, CostCenter: l.cost_center })),
+    }) as Record<string, unknown>;
+    return executeDraft(ctx, 'draft_sales_entry', {
+      kind: 'sales', division: div, resource: 'salesentry/SalesEntries', body, ledgerKey, checks, tier, tierReasons: reasons, duplicates, file,
+      document: { subject: description, account: a.customer_id, date: a.entry_date },
+      attachDocument: (b, id) => { b.Document = id; }, idField: 'EntryID',
+      approvalSummary: `${a.credit_note ? 'Sales credit note' : 'Sales entry'} ${description}: ${ledgerKey.currency} ${a.totals.gross.toFixed(2)} incl. VAT ${a.totals.vat.toFixed(2)}`,
+    }, a.dry_run);
+  },
+});
+
 // --- draft_general_journal_entry ---
 
 const journalLine = z.object({
@@ -449,7 +522,7 @@ export const processEntry = defineTool({
   title: 'Process (release) a drafted entry',
   description: 'Releases an entry this server drafted, after enforcing its approval tier: auto entries after their hold time without approval; approve entries with the approver\'s answer and one approval token; two-step entries with two answers and two tokens approved on two different channels within 72 h, by the same or different approvers. Give the draftId the draft tool returned, the answer text exactly as the approver gave it, and the token(s) the approval flow issued. The drafter cannot approve their own entry. The entry must still be open (Status 20) in Exact. WRITES.',
   inputSchema: {
-    draftId: guidField('draftId returned by draft_purchase_entry or draft_general_journal_entry.').optional(),
+    draftId: guidField('draftId returned by draft_purchase_entry, draft_sales_entry or draft_general_journal_entry.').optional(),
     entry_id: guidField('Same as draftId (Exact entry GUID).').optional(),
     ...approvalFields,
     division: divisionField,
@@ -478,13 +551,15 @@ export const processEntry = defineTool({
       if (!check.ok) return refused(check.problems.join('; ') + '.', { entry_id: a.entry_id, tier: contractTier(tier), problems: check.problems });
       approvers = check.approvers;
     }
-    const resource = row.kind === 'purchase' ? `purchaseentry/PurchaseEntries(${guid(row.exactEntryId!)})` : `generaljournalentry/GeneralJournalEntries(${guid(row.exactEntryId!)})`;
+    const resource = row.kind === 'purchase' ? `purchaseentry/PurchaseEntries(${guid(row.exactEntryId!)})`
+      : row.kind === 'sales' ? `salesentry/SalesEntries(${guid(row.exactEntryId!)})`
+      : `generaljournalentry/GeneralJournalEntries(${guid(row.exactEntryId!)})`;
     const live: any = await ctx.exact.getOne(resource, { select: ['EntryID', 'EntryNumber', 'Status'] }, { division: div });
     if (!live) return refused('the entry no longer exists in Exact.', { entry_id: a.entry_id });
     if (Number(live.Status) !== STATUS_OPEN) return refused(`the entry is ${entryStatusName(Number(live.Status))} in Exact, not open.`, { entry_id: a.entry_id, exact_status: Number(live.Status) });
     let processed = false;
     if (ctx.config.processMode === 'api') {
-      if (row.kind !== 'purchase') return refused('Exact Online has no API update for general journal entries; process it in Exact.', { entry_id: a.entry_id, tier: contractTier(tier), approvers });
+      if (row.kind !== 'purchase') return refused(`processing ${row.kind === 'sales' ? 'sales' : 'general journal'} entries through the API is not supported; process it in Exact.`, { entry_id: a.entry_id, tier: contractTier(tier), approvers });
       try {
         await ctx.exact.put(resource, { Status: 50 }, { division: div });
       } finally {

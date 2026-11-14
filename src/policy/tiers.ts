@@ -21,7 +21,7 @@ export const DEFAULT_TIER_POLICY: TierPolicy = {
 };
 
 export interface TierInput {
-  kind: 'purchase' | 'general_journal' | 'matchset';
+  kind: 'purchase' | 'sales' | 'general_journal' | 'matchset';
   /** gross, or the sum of the absolute line amounts plus VAT when larger (purchase); total debit (journal); in the entry currency */
   amount: number;
   /** purchase lines with both positive and negative amounts */

@@ -5,16 +5,17 @@ import { readOnly } from './common.js';
 export const whoami = defineTool({
   name: 'whoami',
   title: 'Current Exact Online user',
-  description: 'Returns the signed-in Exact Online user (name, email), their region and current division. Use first to confirm which administration questions will apply to.',
+  description: 'Returns the signed-in Exact Online user (name, email), their region and default_division: the division every tool uses when division is omitted. exact_web_division is the division last opened in the Exact web app and is not used by the tools. Use first to confirm which administration questions will apply to.',
   inputSchema: {},
   annotations: readOnly,
   async run(ctx) {
     const me = await ctx.exact.me();
+    // the tools act on the division stored at connect; Exact's own current division follows the user's web session
     const data = {
       name: me?.FullName ?? ctx.user.name, email: me?.Email ?? ctx.user.email, user_id: me?.UserID ?? ctx.user.exactUserId,
-      region: ctx.user.region, current_division: me?.CurrentDivision ?? ctx.user.currentDivision,
+      region: ctx.user.region, default_division: ctx.user.currentDivision, exact_web_division: me?.CurrentDivision ?? null,
     };
-    return { summary: `Signed in as ${data.name} (region ${data.region}, current division ${data.current_division}).`, data };
+    return { summary: `Signed in as ${data.name} (region ${data.region}, tools default to division ${data.default_division}; pass division to use another).`, data };
   },
 });
 

@@ -170,7 +170,7 @@ describe('write tools', () => {
   it('dry-runs by default, posts only when dry_run=false, and audits', async () => {
     const token = await login({ ENABLE_WRITE_TOOLS: 'true' });
     const tools = ((await mcpCall(env, token, 'tools/list')).body.result.tools as any[]).filter((t) => t.name.startsWith('create_'));
-    expect(tools.map((t) => t.name).sort()).toEqual(['create_quotation', 'create_sales_invoice', 'create_sales_order']);
+    expect(tools.map((t) => t.name).sort()).toEqual(['create_account', 'create_quotation', 'create_sales_invoice', 'create_sales_order']);
     expect(tools.every((t) => t.annotations.destructiveHint === true)).toBe(true);
 
     env.fake.on((url, init) => url.pathname.endsWith('/salesorder/SalesOrders') && init.method === 'POST' ? json({ d: { OrderID: 'order-guid', OrderNumber: 42 } }, 201) : undefined);
