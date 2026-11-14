@@ -105,6 +105,8 @@ class ExactClient implements ExactApi {
     try {
       res = await this.svc._fetch(url, {
         method: init.method ?? 'GET',
+        // a file download must come from Exact itself, not from wherever it redirects
+        ...(init.raw ? { redirect: 'manual' as const } : {}),
         headers: {
           authorization: `Bearer ${token}`, accept: init.xml !== undefined ? 'application/xml' : 'application/json',
           ...(init.xml !== undefined ? { 'content-type': 'application/xml' } : init.body !== undefined ? { 'content-type': 'application/json' } : {}),
@@ -136,9 +138,9 @@ class ExactClient implements ExactApi {
       throw new ExactError('rate_limit', `Exact Online rate limit reached, try again in ${Math.max(1, Math.ceil(wait / 1000))} seconds.`, 429);
     }
     if (!res.ok) throw await this.apiError(res);
+    if (init.raw) return res;
     if (res.status === 204) return null;
     if (init.xml !== undefined) return res.text();
-    if (init.raw) return res;
     return res.json();
   }
 
@@ -253,6 +255,8 @@ class ExactClient implements ExactApi {
     try { u = new URL(url); } catch { throw new ExactError('invalid_input', 'Not a valid attachment URL.'); }
     if (u.origin !== new URL(exactHost(this.user.region)).origin) throw new ExactError('invalid_input', 'Only Exact Online attachment URLs can be downloaded.');
     const res: Response = await this.request(u.href, { raw: true });
+    if (res.status !== 200) throw new ExactError('api', `Exact Online answered HTTP ${res.status} for the attachment.`, res.status);
+    if ((res.headers.get('content-type') ?? '').startsWith('text/html')) throw new ExactError('api', 'Exact Online answered with a web page instead of the file.');
     const len = Number(res.headers.get('content-length') ?? 0);
     if (len > maxBytes) throw new ExactError('invalid_input', `The file is larger than ${maxBytes} bytes.`);
     const bytes = Buffer.from(await res.arrayBuffer());

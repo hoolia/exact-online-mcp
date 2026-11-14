@@ -333,7 +333,7 @@ export const draftSalesEntry = defineTool({
     payment_reference: z.string().max(50).optional(),
     credit_note: z.boolean().default(false).describe('true: sales credit note (Type 21).'),
     lines: z.array(salesLine).min(1).max(50),
-    file: fileInput.optional().describe('The source document: uploaded as a document of the customer (document_type 10 = sales invoice) and linked. Its SHA-256 joins the duplicate check.'),
+    file: fileInput.extend({ document_type: z.number().int().positive().default(10).describe('Document type id (list_document_types); 10 = sales invoice.') }).optional().describe('The source document: uploaded as a document of the customer and linked. Its SHA-256 joins the duplicate check.'),
     division: divisionField, dry_run: dryRun,
   },
   annotations: writeAnnotations,

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { callTool, getTokens, json, odata, parseResult, startApp, type TestEnv } from './helpers.js';
 import { memStore } from './pgmem.js';
 import { collectionRows } from '../src/exact/client.js';
+import { ibanValid } from '../src/tools/accounts.js';
 
 // synthetic fixtures only
 const CUSTOMER = '55555555-5555-5555-5555-555555555555';
@@ -152,6 +153,7 @@ describe('accountant write tools', () => {
         return bare(existing ? [{ ID: CUSTOMER, Code: '  42', Name: 'Acme BV', IsSupplier: true }] : []);
       }
       if (p.endsWith('/crm/Accounts')) { posted.push({ path: 'Accounts', body: JSON.parse(String(init.body)) }); return json({ d: { ID: CUSTOMER, Code: '  43' } }, 201); }
+      if (p.endsWith('/crm/BankAccounts') && (init.method ?? 'GET') === 'GET') return bare([]);
       if (p.endsWith('/crm/BankAccounts')) { posted.push({ path: 'BankAccounts', body: JSON.parse(String(init.body)) }); return json({ d: { ID: 'b' } }, 201); }
       return undefined;
     });
@@ -164,6 +166,32 @@ describe('accountant write tools', () => {
     expect(r.data).toMatchObject({ id: CUSTOMER, code: '43', bank_account_id: 'b' });
     expect(posted[0]!.body).toMatchObject({ Name: 'Acme BV', VATNumber: 'NL123456789B01', IsSupplier: true });
     expect(posted[1]!.body).toMatchObject({ Account: CUSTOMER, BankAccount: 'NL91ABNA0417164300', Main: true });
+  });
+
+  it('ibanValid checks the mod-97 digits', () => {
+    expect(ibanValid('NL91ABNA0417164300')).toBe(true);
+    expect(ibanValid('NL92ABNA0417164300')).toBe(false);
+  });
+
+  it('update_account refuses an extra IBAN for a relation that has one, and an IBAN with wrong digits', async () => {
+    const token = await login({ ENABLE_WRITE_TOOLS: 'true' });
+    const posted: string[] = [];
+    env.fake.on((url, init) => {
+      const p = url.pathname;
+      const method = init.method ?? 'GET';
+      if (p.endsWith(`/crm/Accounts(guid'${CUSTOMER}')`) && method === 'GET') return json({ d: { ID: CUSTOMER, Name: 'Acme BV', Status: 'P', IsSupplier: true } });
+      if (p.endsWith('/crm/BankAccounts') && method === 'GET') return bare([{ ID: 'b', BankAccount: 'NL02ABNA0123456789' }]);
+      if (method !== 'GET') { posted.push(`${method} ${p}`); return json({ d: {} }, 201); }
+      return undefined;
+    });
+    const extra = parseResult((await callTool(env, token, 'update_account', { account_id: CUSTOMER, add_iban: 'NL91ABNA0417164300', dry_run: false })).body);
+    expect(extra.data).toMatchObject({ refused: true, existing_bank_accounts: ['NL02ABNA0123456789'] });
+    const bad = parseResult((await callTool(env, token, 'update_account', { account_id: CUSTOMER, add_iban: 'NL92ABNA0417164300', dry_run: false })).body);
+    expect(bad.isError).toBe(true);
+    // customer=false leaves a prospect a prospect
+    const r = parseResult((await callTool(env, token, 'update_account', { account_id: CUSTOMER, customer: false, city: 'Arnhem' })).body);
+    expect(r.data.after).toEqual({ City: 'Arnhem' });
+    expect(posted).toEqual([]);
   });
 
   it('draft_sales_entry checks, posts a Type 20 sales entry and refuses an Exact duplicate', async () => {
@@ -193,5 +221,29 @@ describe('accountant write tools', () => {
     const again = parseResult((await callTool(env, token, 'draft_sales_entry', { ...args, your_ref: 'SB-1', dry_run: false })).body);
     expect(again.data).toMatchObject({ refused: true, duplicate: true });
     expect(posted).toHaveLength(1);
+  });
+
+  it('draft_sales_entry files the source document as a sales invoice', async () => {
+    const token = await login({ ENABLE_WRITE_TOOLS: 'true' }, true);
+    const docs: any[] = [];
+    env.fake.on((url, init) => {
+      const p = url.pathname;
+      const method = init.method ?? 'GET';
+      if (p.endsWith('/vat/VATCodes')) return odata([{ Code: '2  ', Percentage: 0.21, IsBlocked: false, VATTransactionType: 'S' }]);
+      if (p.endsWith('/financial/GLAccounts')) return bare([{ ID: GL_REVENUE, Code: '8000', BalanceType: 'W' }]);
+      if (p.endsWith('/salesentry/SalesEntries') && method === 'GET') return bare([]);
+      if (p.endsWith('/salesentry/SalesEntries')) return json({ d: { EntryID: ENTRY, EntryNumber: 9, Status: 20 } }, 201);
+      if (p.endsWith('/documents/Documents')) { docs.push(JSON.parse(String(init.body))); return json({ d: { ID: DOC } }, 201); }
+      if (p.endsWith('/documents/DocumentAttachments')) return json({ d: { ID: ATT } }, 201);
+      return undefined;
+    });
+    const pdf = Buffer.from('%PDF-1.7\n%synthetic\n').toString('base64');
+    const r = parseResult((await callTool(env, token, 'draft_sales_entry', {
+      customer_id: CUSTOMER, journal: '70', your_ref: 'SB-2', entry_date: '2026-11-13', description: { supplier: 'Acme', period: '2026-10', short: 'detachering' },
+      totals: { net: 100, vat: 21, gross: 121 }, lines: [{ gl_account_id: GL_REVENUE, amount: 100, vat_code: '2' }],
+      file: { file_name: 'sb-2.pdf', content_base64: pdf }, dry_run: false,
+    })).body);
+    expect(r.data).toMatchObject({ document_id: DOC });
+    expect(docs[0]).toMatchObject({ Type: 10, Account: CUSTOMER });
   });
 });

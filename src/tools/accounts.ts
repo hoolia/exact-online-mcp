@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { defineTool } from './types.js';
+import { defineTool, type ToolContext } from './types.js';
 import { divisionField, guidField, hashPayload, trimCode } from './common.js';
 import { guid, str } from '../exact/odata.js';
 import { ExactError } from '../exact/errors.js';
@@ -11,6 +11,28 @@ const compact = <T extends object>(o: T) => Object.fromEntries(Object.entries(o)
 const IBAN = /^[A-Z]{2}\d{2}[A-Z0-9]{10,30}$/;
 const normIban = (s: string) => s.replace(/\s+/g, '').toUpperCase();
 const normVat = (s: string) => s.replace(/[\s.]/g, '').toUpperCase();
+
+/** ISO 13616 check digits (mod 97). */
+export function ibanValid(iban: string): boolean {
+  if (!IBAN.test(iban)) return false;
+  const digits = (iban.slice(4) + iban.slice(0, 4)).replace(/[A-Z]/g, (c) => String(c.charCodeAt(0) - 55));
+  let rest = 0;
+  for (const d of digits) rest = (rest * 10 + Number(d)) % 97;
+  return rest === 1;
+}
+
+function parseIban(raw: string | undefined, field: string): string | undefined {
+  if (!raw) return undefined;
+  const iban = normIban(raw);
+  if (!ibanValid(iban)) throw new ExactError('invalid_input', `${field} is not a valid IBAN (check digits).`);
+  return iban;
+}
+
+/** Relations that already hold this IBAN, other than the given one. */
+async function ibanOwners(ctx: ToolContext, div: number, iban: string, except?: string) {
+  const { rows } = await ctx.exact.list('crm/BankAccounts', { select: ['Account', 'AccountName', 'BankAccount'], filter: `BankAccount eq ${str(iban)}` }, { division: div, maxRows: 5, maxPages: 1 });
+  return rows.filter((r: any) => !except || String(r.Account).toLowerCase() !== except.toLowerCase());
+}
 
 const fields = {
   name: z.string().min(1).max(100).describe('Legal name of the relation.'),
@@ -56,13 +78,16 @@ export const createAccount = defineTool({
   annotations: writeAnnotations,
   async run(ctx, a) {
     if (!a.supplier && !a.customer) throw new ExactError('invalid_input', 'A relation must be a supplier, a customer, or both.');
-    const iban = a.iban ? normIban(a.iban) : undefined;
-    if (iban && !IBAN.test(iban)) throw new ExactError('invalid_input', 'iban is not a valid IBAN.');
+    const iban = parseIban(a.iban, 'iban');
     const div = await ctx.exact.resolveDivision(a.division);
     const ors = [`Name eq ${str(a.name)}`, a.vat_number && `VATNumber eq ${str(normVat(a.vat_number))}`, a.chamber_of_commerce && `ChamberOfCommerce eq ${str(a.chamber_of_commerce)}`].filter(Boolean);
     const { rows: existing } = await ctx.exact.list('crm/Accounts', { select: ACCOUNT_SELECT, filter: ors.join(' or ') }, { division: div, maxRows: 5, maxPages: 1 });
     if (existing.length) {
       return { summary: `REFUSED: relation ${existing.map((e: any) => `${e.Name} (${trimCode(e.Code)})`).join(', ')} already exists with this name, VAT or chamber of commerce number. Nothing was written; use update_account.`, data: { refused: true, duplicate: true, division: div, existing: existing.map(shape) } };
+    }
+    if (iban) {
+      const owners = await ibanOwners(ctx, div, iban);
+      if (owners.length) return { summary: `REFUSED: IBAN ${iban} already belongs to ${owners.map((o: any) => o.AccountName).join(', ')}. Nothing was written.`, data: { refused: true, duplicate: true, division: div, iban_owners: owners.map((o: any) => ({ account_id: o.Account, account_name: o.AccountName })) } };
     }
     const payload = { ...body(a), IsSupplier: a.supplier, Status: a.customer ? 'C' : undefined };
     const plan = { division: div, account: compact(payload), bank_account: iban ? { BankAccount: iban, BankAccountHolderName: a.name, Main: true } : null };
@@ -90,24 +115,37 @@ export const createAccount = defineTool({
 export const updateAccount = defineTool({
   name: 'update_account',
   title: 'Update relation',
-  description: 'Changes fields of an existing relation (supplier or customer): name, address, VAT and chamber of commerce numbers, default VAT codes, G/L accounts, payment conditions, supplier/customer flags, blocked; and adds an IBAN. Only the fields given change. WRITES to Exact Online; dry_run first.',
+  description: 'Changes fields of an existing relation (supplier or customer): name, address, VAT and chamber of commerce numbers, default VAT codes, G/L accounts, payment conditions, supplier/customer flags, blocked. Only the fields given change. add_iban registers an IBAN only for a relation without any bank account: a changed or extra IBAN of a relation that already has one is refused, because "our bank details changed" is the classic invoice fraud; a person verifies it with the relation by phone and changes it in Exact. WRITES to Exact Online; dry_run first.',
   inputSchema: {
     account_id: guidField('Relation GUID (search_accounts).'),
     ...Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, (v as z.ZodTypeAny).optional()])) as { [K in keyof typeof fields]: z.ZodOptional<z.ZodTypeAny> },
     supplier: z.boolean().optional(), customer: z.boolean().optional().describe('true: Status C (customer).'),
     blocked: z.boolean().optional(),
-    add_iban: z.string().min(15).max(40).optional().describe('IBAN to add as a bank account of the relation.'),
+    add_iban: z.string().min(15).max(40).optional().describe('IBAN of a relation that has no bank account yet.'),
     division: divisionField, dry_run: dryRun,
   },
   annotations: writeAnnotations,
   async run(ctx, a: any) {
-    const iban = a.add_iban ? normIban(a.add_iban) : undefined;
-    if (iban && !IBAN.test(iban)) throw new ExactError('invalid_input', 'add_iban is not a valid IBAN.');
+    const iban = parseIban(a.add_iban, 'add_iban');
     const div = await ctx.exact.resolveDivision(a.division);
     const current: any = await ctx.exact.getOne(`crm/Accounts(${guid(a.account_id)})`, { select: [...ACCOUNT_SELECT, 'Email', 'Phone', 'AddressLine1', 'Postcode', 'Country', 'PaymentConditionPurchase', 'PaymentConditionSales', 'PurchaseVATCode', 'SalesVATCode'] }, { division: div });
     if (!current) throw new ExactError('invalid_input', 'Relation not found.');
-    const change = compact({ ...body(a), IsSupplier: a.supplier, Status: a.customer === undefined ? undefined : a.customer ? 'C' : 'A', Blocked: a.blocked });
+    // customer=false only ends a customer status; a prospect or suspect status stays
+    const status = a.customer === true ? 'C' : a.customer === false && current.Status === 'C' ? 'A' : undefined;
+    const change = compact({ ...body(a), IsSupplier: a.supplier, Status: status, Blocked: a.blocked });
     if (!Object.keys(change).length && !iban) throw new ExactError('invalid_input', 'Nothing to change.');
+    const ors = [change.VATNumber && `VATNumber eq ${str(String(change.VATNumber))}`, change.ChamberOfCommerce && `ChamberOfCommerce eq ${str(String(change.ChamberOfCommerce))}`].filter(Boolean);
+    if (ors.length) {
+      const { rows } = await ctx.exact.list('crm/Accounts', { select: ACCOUNT_SELECT, filter: ors.join(' or ') }, { division: div, maxRows: 5, maxPages: 1 });
+      const others = rows.filter((r: any) => String(r.ID).toLowerCase() !== a.account_id.toLowerCase());
+      if (others.length) return { summary: `REFUSED: relation ${others.map((e: any) => e.Name).join(', ')} already has this VAT or chamber of commerce number. Nothing was written.`, data: { refused: true, duplicate: true, division: div, existing: others.map(shape) } };
+    }
+    if (iban) {
+      const { rows: own } = await ctx.exact.list('crm/BankAccounts', { select: ['ID', 'BankAccount'], filter: `Account eq ${guid(a.account_id)}` }, { division: div, maxRows: 5, maxPages: 1 });
+      if (own.length) return { summary: `REFUSED: ${current.Name} already has bank account ${own.map((b: any) => b.BankAccount).join(', ')}. A changed or extra IBAN is a known fraud pattern: verify it with the relation by phone, then change it in Exact yourself. Nothing was written.`, data: { refused: true, division: div, existing_bank_accounts: own.map((b: any) => b.BankAccount) } };
+      const owners = await ibanOwners(ctx, div, iban, a.account_id);
+      if (owners.length) return { summary: `REFUSED: IBAN ${iban} already belongs to ${owners.map((o: any) => o.AccountName).join(', ')}. Nothing was written.`, data: { refused: true, duplicate: true, division: div, iban_owners: owners.map((o: any) => ({ account_id: o.Account, account_name: o.AccountName })) } };
+    }
     const before = Object.fromEntries(Object.keys(change).map((k) => [k, current[k] ?? null]));
     if (a.dry_run) return { summary: `DRY RUN (nothing was changed in division ${div}). Relation ${current.Name}: ${Object.keys(change).join(', ') || 'no fields'}${iban ? `, add IBAN ${iban}` : ''}. Confirm with the user, then call again with dry_run=false.`, data: { dry_run: true, division: div, account: shape(current), before, after: change, add_iban: iban ?? null } };
     try {
