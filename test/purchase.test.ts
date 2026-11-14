@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { callTool, getTokens, odata, parseResult, startApp, type TestEnv } from './helpers.js';
+import { callTool, getTokens, json, odata, parseResult, startApp, type TestEnv } from './helpers.js';
 
 let env: TestEnv;
 afterEach(() => env?.close());
@@ -21,6 +21,19 @@ describe('read tools', () => {
     });
     const r = parseResult((await callTool(env, token, 'list_vat_codes', { use: 'purchase' })).body);
     expect(r.data[0]).toMatchObject({ code: '2', type: 'excluding', use: 'both' });
+  });
+  it('list_journals selects only Journal properties and names the type', async () => {
+    const token = await login();
+    env.fake.on((url) => {
+      if (!url.pathname.endsWith('/financial/Journals')) return undefined;
+      // Exact answers 400 for an unknown property such as TypeDescription
+      if ((url.searchParams.get('$select') ?? '').includes('TypeDescription')) return json({ error: { message: { value: "Type 'Exact.Web.Api.Models.Journal' does not have a property named 'TypeDescription'." } } }, 400);
+      expect(url.searchParams.get('$filter')).toBe('(Type eq 20 or Type eq 21)');
+      return json({ d: [{ Code: '70', Description: 'Verkoop', Type: 20, Currency: 'EUR' }] });
+    });
+    const r = parseResult((await callTool(env, token, 'list_journals', { kind: 'sales' })).body);
+    expect(r.isError).toBe(false);
+    expect(r.data).toEqual([expect.objectContaining({ code: '70', type: 'sales', type_id: 20 })]);
   });
   it('list_bank_transaction_lines needs a date range and filters on it', async () => {
     const token = await login();
