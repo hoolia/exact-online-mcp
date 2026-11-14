@@ -110,8 +110,10 @@ export const listJournals = defineTool({
   async run(ctx, a) {
     const TYPES: Record<string, number[]> = { cash: [10], bank: [12], sales: [20, 21], purchase: [22, 23], general: [90] };
     const filter = a.kind === 'any' ? undefined : `(${TYPES[a.kind]!.map((t) => `Type eq ${t}`).join(' or ')})`;
-    const { rows } = await ctx.exact.list('financial/Journals', { select: ['ID', 'Code', 'Description', 'Type', 'TypeDescription', 'Currency', 'GLAccountCode'], filter, orderby: 'Code' }, { division: a.division, maxRows: 200, maxPages: 4 });
-    return { summary: `Found ${rows.length} journal(s).`, data: rows.map((j: any) => ({ code: trimCode(j.Code), description: j.Description, type: j.TypeDescription ?? j.Type, type_id: j.Type, currency: j.Currency, gl_account: trimCode(j.GLAccountCode) })) };
+    // Journal has no TypeDescription property; Exact refuses the whole query when it is selected
+    const { rows } = await ctx.exact.list('financial/Journals', { select: ['ID', 'Code', 'Description', 'Type', 'Currency', 'GLAccountCode'], filter, orderby: 'Code' }, { division: a.division, maxRows: 200, maxPages: 4 });
+    const NAME: Record<number, string> = { 10: 'cash', 12: 'bank', 20: 'sales', 21: 'sales', 22: 'purchase', 23: 'purchase', 90: 'general' };
+    return { summary: `Found ${rows.length} journal(s).`, data: rows.map((j: any) => ({ code: trimCode(j.Code), description: j.Description, type: NAME[j.Type] ?? String(j.Type), type_id: j.Type, currency: j.Currency, gl_account: trimCode(j.GLAccountCode) })) };
   },
 });
 
