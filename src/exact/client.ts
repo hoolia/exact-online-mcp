@@ -18,6 +18,17 @@ export interface ListOptions { division?: number; maxRows?: number; maxPages?: n
 export interface ListResult<T = any> { rows: T[]; truncated: boolean }
 
 const MAX_RETRY_WAIT_MS = 10_000;
+
+/**
+ * Rows of an OData collection response. Exact answers `{d: {results: [...], __next}}` for a paged collection and a
+ * bare `{d: [...]}` when the query carries `$top`; a single entity comes back as `{d: {...}}`.
+ */
+export function collectionRows(j: any): any[] {
+  const d = j?.d;
+  if (Array.isArray(d)) return d;
+  if (Array.isArray(d?.results)) return d.results;
+  return d ? [d] : [];
+}
 const DIVISION_CACHE_MS = 60 * 60 * 1000;
 
 export interface ExactApi {
@@ -31,6 +42,8 @@ export interface ExactApi {
   put(resource: string, body: unknown, o?: { division?: number }): Promise<void>;
   /** POST an XML document to XMLUpload.aspx for a topic; returns the response XML */
   postXml(topic: string, xml: string, o?: { division?: number }): Promise<string>;
+  /** GET a file from the Exact host (a DocumentAttachment Url) with the user's token; refuses other hosts */
+  download(url: string, maxBytes: number): Promise<{ bytes: Buffer; contentType: string | null }>;
   /** HTTP status of the last Exact response this client received; null before any call */
   readonly lastStatus: number | null;
 }
@@ -85,7 +98,7 @@ class ExactClient implements ExactApi {
     }
   }
 
-  private async request(url: string, init: { method?: string; body?: unknown; xml?: string } = {}, attempt = 0, rejected?: string): Promise<any> {
+  private async request(url: string, init: { method?: string; body?: unknown; xml?: string; raw?: boolean } = {}, attempt = 0, rejected?: string): Promise<any> {
     const { division, endpoint } = await this.guard(url);
     const token = await this.svc._tokens.getAccessToken(this.user.id, rejected);
     let res: Response;
@@ -125,6 +138,7 @@ class ExactClient implements ExactApi {
     if (!res.ok) throw await this.apiError(res);
     if (res.status === 204) return null;
     if (init.xml !== undefined) return res.text();
+    if (init.raw) return res;
     return res.json();
   }
 
@@ -154,8 +168,7 @@ class ExactClient implements ExactApi {
 
   async me() {
     const j = await this.request(`${apiBase(this.user.region)}/current/Me?$select=UserID,FullName,Email,CurrentDivision,Language`);
-    const row = j?.d?.results?.[0] ?? j?.d;
-    return convertDates(row);
+    return convertDates(collectionRows(j)[0] ?? null);
   }
 
   async listDivisions() {
@@ -196,7 +209,7 @@ class ExactClient implements ExactApi {
     while (url) {
       const j = await this.request(url);
       pages++;
-      const results = j?.d?.results ?? (j?.d ? [j.d] : []);
+      const results = collectionRows(j);
       rows.push(...convertDates(results));
       const next: string | undefined = j?.d?.__next;
       if (rows.length >= maxRows) { truncated = !!next || rows.length > maxRows; break; }
@@ -215,7 +228,7 @@ class ExactClient implements ExactApi {
     const division = await this.resolveDivision(o.division);
     try {
       const j = await this.request(`${apiBase(this.user.region)}/${division}/${resource}?$select=${encodeURIComponent(q.select.join(','))}`);
-      const row = j?.d?.results?.[0] ?? j?.d;
+      const row = collectionRows(j)[0];
       return row ? (convertDates(row) as T) : null;
     } catch (e) {
       if (e instanceof ExactError && e.status === 404) return null;
@@ -233,6 +246,18 @@ class ExactClient implements ExactApi {
     const division = await this.resolveDivision(o.division);
     const url = `${exactHost(this.user.region)}/docs/XMLUpload.aspx?Topic=${encodeURIComponent(topic)}&_Division_=${division}`;
     return String(await this.request(url, { method: 'POST', xml }) ?? '');
+  }
+
+  async download(url: string, maxBytes: number): Promise<{ bytes: Buffer; contentType: string | null }> {
+    let u: URL;
+    try { u = new URL(url); } catch { throw new ExactError('invalid_input', 'Not a valid attachment URL.'); }
+    if (u.origin !== new URL(exactHost(this.user.region)).origin) throw new ExactError('invalid_input', 'Only Exact Online attachment URLs can be downloaded.');
+    const res: Response = await this.request(u.href, { raw: true });
+    const len = Number(res.headers.get('content-length') ?? 0);
+    if (len > maxBytes) throw new ExactError('invalid_input', `The file is larger than ${maxBytes} bytes.`);
+    const bytes = Buffer.from(await res.arrayBuffer());
+    if (bytes.length > maxBytes) throw new ExactError('invalid_input', `The file is larger than ${maxBytes} bytes.`);
+    return { bytes, contentType: res.headers.get('content-type') };
   }
 
   async put(resource: string, body: unknown, o: { division?: number } = {}): Promise<void> {
