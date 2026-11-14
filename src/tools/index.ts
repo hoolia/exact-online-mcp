@@ -6,17 +6,22 @@ import { getProfitAndLoss, getRevenueByPeriod, listGlAccountRgsMappings, listGlA
 import { getSalesInvoice, listPurchaseEntries, listSalesInvoices, searchItems } from './sales.js';
 import { createQuotation, createSalesInvoice, createSalesOrder } from './write.js';
 import { getPurchaseEntry, listBankTransactionLines, listDocumentTypes, listJournals, listVatCodes } from './purchase.js';
-import { attachDocument, createMatchset, draftGeneralJournalEntry, draftPurchaseEntry, processEntry } from './bookkeeping.js';
+import { attachDocument, createMatchset, draftGeneralJournalEntry, draftPurchaseEntry, draftSalesEntry, processEntry } from './bookkeeping.js';
+import { getBalanceSheet, getTrialBalance, listCostCenters, listFinancialPeriods, listPaymentConditions } from './reports.js';
+import { getDocument, getGeneralJournalEntry, getSalesEntry, listDocuments, listGeneralJournalEntries, listSalesEntries, queryExact } from './entries.js';
+import { createAccount, updateAccount } from './accounts.js';
 
 export const readTools: ToolDef[] = [
   whoami, listDivisions, searchAccounts, getAccount, listOpenReceivables, listOpenPayables, listSalesInvoices, getSalesInvoice,
   listPurchaseEntries, getPurchaseEntry, searchItems, listGlAccounts, listGlAccountRgsMappings, listVatCodes, listJournals, listDocumentTypes,
   getProfitAndLoss, getRevenueByPeriod, listTransactions, listBankTransactionLines,
+  getTrialBalance, getBalanceSheet, listFinancialPeriods, listCostCenters, listPaymentConditions,
+  listSalesEntries, getSalesEntry, listGeneralJournalEntries, getGeneralJournalEntry, listDocuments, getDocument, queryExact,
 ];
 /** Write tools that need nothing beyond the Exact connection. */
-export const plainWriteTools: ToolDef[] = [createSalesOrder, createSalesInvoice, createQuotation];
+export const plainWriteTools: ToolDef[] = [createSalesOrder, createSalesInvoice, createQuotation, createAccount, updateAccount];
 /** Write tools that need the ledger database, and some an approval key or a feature flag. */
-export const ledgerTools: ToolDef[] = [draftPurchaseEntry, draftGeneralJournalEntry, attachDocument, processEntry, createMatchset];
+export const ledgerTools: ToolDef[] = [draftPurchaseEntry, draftSalesEntry, draftGeneralJournalEntry, attachDocument, processEntry, createMatchset];
 export const writeTools: ToolDef[] = [...plainWriteTools, ...ledgerTools];
 
 type ToolCfg = Pick<Config, 'enableWriteTools'> & Partial<Pick<Config, 'writeTools' | 'approvalSigningKey' | 'enableMatchsets'>>;

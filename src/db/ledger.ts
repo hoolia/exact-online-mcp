@@ -1,6 +1,6 @@
 import { transaction, type PoolLike } from './pg.js';
 
-export type EntryKind = 'purchase' | 'general_journal';
+export type EntryKind = 'purchase' | 'sales' | 'general_journal';
 /** unknown: the POST to Exact failed in a way that may still have created the entry; the key stays taken */
 export type LedgerStatus = 'reserved' | 'unknown' | 'drafted' | 'approved' | 'processed';
 
@@ -77,7 +77,7 @@ const toRow = (r: any): LedgerRow => ({
 });
 
 export const dedupeKey = (r: { kind: EntryKind; supplierId: string | null; journal: string; refNorm: string }) =>
-  r.kind === 'purchase' ? `purchase|${r.supplierId!.toLowerCase()}|${r.refNorm}` : `general_journal|${r.journal}|${r.refNorm}`;
+  r.kind === 'general_journal' ? `general_journal|${r.journal}|${r.refNorm}` : `${r.kind}|${r.supplierId!.toLowerCase()}|${r.refNorm}`;
 
 const addDays = (isoDate: string, n: number) => new Date(Date.parse(`${isoDate}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
 
