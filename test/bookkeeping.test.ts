@@ -102,7 +102,7 @@ describe('draft_purchase_entry', () => {
     const { token, st } = await start();
     const r = await call(token, 'draft_purchase_entry', purchase());
     expect(r.summary).toContain('DRY RUN');
-    expect(r.data.payload).toMatchObject({ Description: 'Acme|2026-11|INV-2026-0001|hosting', Currency: 'EUR', Type: 30, PurchaseEntryLines: [{ GLAccount: GL_COST, AmountFC: 100, VATCode: '2' }] });
+    expect(r.data.payload).toMatchObject({ Description: '2026-11-01 Acme - hosting 2026-11', YourRef: 'INV-2026-0001', Currency: 'EUR', Type: 30, PurchaseEntryLines: [{ GLAccount: GL_COST, AmountFC: 100, VATCode: '2' }] });
     expect(r.data.checks.every((c: any) => c.ok)).toBe(true);
     expect(r.data.tier).toBe('approve');
     expect(st.posted).toEqual([]);
@@ -113,10 +113,10 @@ describe('draft_purchase_entry', () => {
     expect(r.data.checks.every((c: any) => c.ok)).toBe(true);
     expect(r.data.payload).toMatchObject({ Type: 31, PurchaseEntryLines: [{ AmountFC: -100 }] });
   });
-  it('takes an explicit ref part for the description', async () => {
+  it('renders the entry date, not the ref, in the default description', async () => {
     const { token } = await start();
-    const r = await call(token, 'draft_purchase_entry', purchase({ description: { supplier: 'Acme', period: '2026-11', ref: 'A1', short: 'hosting' } }));
-    expect(r.data.payload.Description).toBe('Acme|2026-11|A1|hosting');
+    const r = await call(token, 'draft_purchase_entry', purchase({ entry_date: '2026-11-03', description: { supplier: 'T-Mobile', period: '2026-11', ref: 'A1', short: 'mobile plan' } }));
+    expect(r.data.payload).toMatchObject({ Description: '2026-11-03 T-Mobile - mobile plan 2026-11', YourRef: 'INV-2026-0001' });
   });
   it.each([
     ['lines that do not add up to net', { lines: [{ gl_account_id: GL_COST, amount: 99, vat_code: '2' }] }, 'line_sum_equals_net'],
@@ -146,9 +146,9 @@ describe('draft_purchase_entry', () => {
   });
   it('refuses a bad description part', async () => {
     const { token } = await start();
-    const r = await call(token, 'draft_purchase_entry', purchase({ description: { supplier: 'Ac|me', period: '2026-11', short: 'x' } }));
+    const r = await call(token, 'draft_purchase_entry', purchase({ description: { supplier: 'Ac - me', period: '2026-11', short: 'x' } }));
     expect(r.isError).toBe(true);
-    expect(r.summary).toContain('must not contain "|"');
+    expect(r.summary).toContain('must not contain "-"');
   });
   it('drafts as Status 20, records the ledger row and the audit row', async () => {
     const { token, st } = await start();
@@ -280,7 +280,7 @@ describe('draft_general_journal_entry', () => {
     expect(r.data.tier).toBe('two-step'); // GL_VAT is a balance account off the empty allow-list
     expect(st.posted[0]!.body).toMatchObject({
       JournalCode: '90', GeneralJournalEntryLines: [
-        { GLAccount: GL_COST, AmountFC: 500, Description: 'Internal|2026-11|MEM-11|accrual', Date: '2026-11-30' },
+        { GLAccount: GL_COST, AmountFC: 500, Description: '2026-11-30 Internal - accrual 2026-11', Date: '2026-11-30' },
         { GLAccount: GL_VAT, AmountFC: -500 },
       ],
     });
@@ -336,7 +336,7 @@ describe('process_entry', () => {
   it('answers the approval contract after a draft and takes draftId', async () => {
     const { token } = await start();
     const r = await call(token, 'draft_purchase_entry', { ...purchase(), dry_run: false });
-    expect(r.data).toMatchObject({ approvalRequired: true, draftId: ENTRY, tier: 'approve', summary: 'Purchase invoice Acme|2026-11|INV-2026-0001|hosting: EUR 121.00 incl. VAT 21.00' });
+    expect(r.data).toMatchObject({ approvalRequired: true, draftId: ENTRY, tier: 'approve', summary: 'Purchase invoice 2026-11-01 Acme - hosting 2026-11: EUR 121.00 incl. VAT 21.00' });
     const ok = await call(token, 'process_entry', { draftId: r.data.draftId, answer: 'Ja, akkoord', approvalToken: approval(ENTRY, 'alice', 'approve', undefined, 'ja,  AKKOORD') });
     expect(ok.data).toMatchObject({ draftId: ENTRY, status: 'approved', approvers: ['alice'] });
   });

@@ -29,7 +29,7 @@ const descriptionParts = z.object({
   period: z.string().min(4).max(7).describe('Period the entry is about: YYYY-MM, YYYY-Qn or YYYY.'),
   ref: z.string().min(1).max(30).optional().describe('Reference as it should read in the description; omitted: your_ref (purchase) or reference (journal).'),
   short: z.string().min(1).max(60).describe('Short text: what the entry is for, e.g. "hosting".'),
-}).describe('Parts of the entry description; the server renders the template (default {supplier}|{period}|{ref}|{short}) and validates it.');
+}).describe('Parts of the entry description; the server adds {date} (entry_date), renders the template (default "{date} {supplier} - {short} {period}") and validates it.');
 
 const fileInput = z.object({
   file_name: z.string().min(1).max(200).regex(/\.(pdf|png|jpe?g|xml|tiff?)$/i, 'use a .pdf, .png, .jpg, .xml or .tif file name'),
@@ -124,9 +124,9 @@ function checkGlKnown(ids: string[], known: Map<string, unknown>): Check {
   return { name: 'gl_account_known', ok: !missing.length, message: missing.length ? `G/L account(s) ${missing.join(', ')} not found` : 'G/L accounts known' };
 }
 
-function describe(ctx: ToolContext, parts: { supplier: string; period: string; ref?: string; short: string }, ref: string): string {
+function describe(ctx: ToolContext, parts: { supplier: string; period: string; ref?: string; short: string }, ref: string, date: string): string {
   try {
-    return renderDescription(ctx.config.descriptionTemplate, { supplier: parts.supplier, period: parts.period, short: parts.short, ref: parts.ref ?? ref }, ctx.config.descriptionMaxLength);
+    return renderDescription(ctx.config.descriptionTemplate, { date, supplier: parts.supplier, period: parts.period, short: parts.short, ref: parts.ref ?? ref }, ctx.config.descriptionMaxLength);
   } catch (e) {
     if (e instanceof DescriptionError) throw new ExactError('invalid_input', `Description: ${e.message}.`);
     throw e;
@@ -262,7 +262,7 @@ export const draftPurchaseEntry = defineTool({
   async run(ctx, a) {
     const ledger = requireLedger(ctx);
     const div = await ctx.exact.resolveDivision(a.division);
-    const description = describe(ctx, a.description, a.your_ref);
+    const description = describe(ctx, a.description, a.your_ref, a.entry_date);
     const file = a.file ? await loadFile(ctx, a.file) : null;
     if (file && a.document_sha256 && file.sha256 !== a.document_sha256) throw new ExactError('invalid_input', 'document_sha256 does not match the file.');
     const pdfSha256 = file?.sha256 ?? a.document_sha256 ?? null;
@@ -340,7 +340,7 @@ export const draftSalesEntry = defineTool({
   async run(ctx, a) {
     const ledger = requireLedger(ctx);
     const div = await ctx.exact.resolveDivision(a.division);
-    const description = describe(ctx, a.description, a.your_ref);
+    const description = describe(ctx, a.description, a.your_ref, a.entry_date);
     const file = a.file ? await loadFile(ctx, a.file) : null;
     const [vat, gl] = await Promise.all([vatCodeTable(ctx, div), glAccounts(ctx, div, a.lines.map((l: any) => l.gl_account_id))]);
     const ledgerKey = { supplierId: a.customer_id, journal: a.journal.trim(), refNorm: normaliseRef(a.your_ref), amountCents: cents(a.totals.gross), entryDate: a.entry_date, currency: a.currency.toUpperCase(), pdfSha256: file?.sha256 ?? null };
@@ -413,7 +413,7 @@ export const draftGeneralJournalEntry = defineTool({
   async run(ctx, a) {
     const ledger = requireLedger(ctx);
     const div = await ctx.exact.resolveDivision(a.division);
-    const lineText = (l: any) => describe(ctx, { ...a.description, short: l.short ?? a.description.short }, a.reference);
+    const lineText = (l: any) => describe(ctx, { ...a.description, short: l.short ?? a.description.short }, a.reference, a.entry_date);
     const descriptions = a.lines.map(lineText);
     const file = a.file ? await loadFile(ctx, a.file) : null;
     const vatCodes = a.lines.filter((l: any) => l.vat_code).map((l: any) => l.vat_code);

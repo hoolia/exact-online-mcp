@@ -80,26 +80,42 @@ describe('validators', () => {
 });
 
 describe('description template', () => {
-  const p = { supplier: 'Acme Hosting BV', period: '2026-11', ref: 'INV-1', short: 'servers' };
-  it('renders the parts', () => {
-    expect(renderDescription(T, p)).toBe('Acme Hosting BV|2026-11|INV-1|servers');
+  const p = { date: '2026-11-03', supplier: 'Acme Hosting BV', period: '2026-11', ref: 'INV-1', short: 'servers' };
+  const PIPE = '{supplier}|{period}|{ref}|{short}';
+  it('renders the default "<date> <vendor> - <short> <period>"', () => {
+    expect(T).toBe('{date} {supplier} - {short} {period}');
+    expect(renderDescription(T, p)).toBe('2026-11-03 Acme Hosting BV - servers 2026-11');
   });
-  it('rejects a separator, an empty part and a bad period', () => {
-    expect(() => renderDescription(T, { ...p, short: 'a|b' })).toThrow(DescriptionError);
+  it('keeps hyphens and spaces in names; refuses the " - " separator itself', () => {
+    expect(renderDescription(T, { ...p, supplier: 'T-Mobile Netherlands', short: 'mobile plan' })).toBe('2026-11-03 T-Mobile Netherlands - mobile plan 2026-11');
+    expect(() => renderDescription(T, { ...p, short: 'a - b' })).toThrow(/must not contain "-"/);
+  });
+  it('rejects a separator, an empty part, a bad period and a bad date', () => {
+    expect(() => renderDescription(PIPE, { ...p, short: 'a|b' })).toThrow(DescriptionError);
     expect(() => renderDescription(T, { ...p, supplier: '  ' })).toThrow(/supplier is empty/);
     expect(() => renderDescription(T, { ...p, period: 'nov' })).toThrow(/period/);
+    expect(() => renderDescription(T, { ...p, date: '03-11-2026' })).toThrow(/date must be YYYY-MM-DD/);
     expect(renderDescription(T, { ...p, period: '2026-Q4' })).toContain('2026-Q4');
   });
-  it('shortens short, then supplier, never ref', () => {
+  it('checks only the parts the template uses', () => {
+    expect(renderDescription(T, { ...p, ref: '' })).toBe('2026-11-03 Acme Hosting BV - servers 2026-11');
+    expect(renderDescription(PIPE, { ...p, date: '' })).toBe('Acme Hosting BV|2026-11|INV-1|servers');
+  });
+  it('shortens short, then supplier, never ref or date', () => {
     const long = renderDescription(T, { ...p, supplier: 'A Very Long Supplier Name International', short: 'monthly managed hosting services' }, 60);
     expect(long.length).toBeLessThanOrEqual(60);
-    expect(long).toContain('|INV-1|');
-    expect(() => renderDescription(T, { ...p, ref: 'R'.repeat(60) }, 60)).toThrow(/shorten the reference/);
+    expect(long.startsWith('2026-11-03 ')).toBe(true);
+    expect(long.endsWith(' 2026-11')).toBe(true);
+    const pipe = renderDescription(PIPE, { ...p, supplier: 'A Very Long Supplier Name International', short: 'monthly managed hosting services' }, 60);
+    expect(pipe).toContain('|INV-1|');
+    expect(() => renderDescription(PIPE, { ...p, ref: 'R'.repeat(60) }, 60)).toThrow(/shorten the reference/);
   });
   it('checks the template itself', () => {
     expect(() => checkTemplate('{supplier} {ref} {foo}')).toThrow(/foo/);
-    expect(() => checkTemplate('{supplier}|{short}')).toThrow(/\{ref\}/);
+    expect(() => checkTemplate('{supplier}|{short}')).toThrow(/\{ref\} or \{date\}/);
+    expect(() => checkTemplate('{date} {short}')).toThrow(/\{supplier\}/);
     expect(() => checkTemplate(T)).not.toThrow();
+    expect(() => checkTemplate(PIPE)).not.toThrow();
   });
 });
 
