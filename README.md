@@ -83,7 +83,7 @@ startup; the server refuses to start with a clear message if anything is missing
 | `JWT_EXACT_USER_ID` | Exact `UserID` GUID whose broker connection workload calls use; required with `JWT_ISSUER`. |
 | `DATABASE_URL` | `postgres://` or `postgresql://` URL of the ledger and audit database (the `uri` key of a CloudNativePG `<cluster>-app` Secret fits); migrations in `migrations/` run at startup. Empty: the bookkeeping write tools stay disabled. |
 | `APPROVAL_SIGNING_KEY` | HMAC key (32+ characters) of approval tokens; empty: `process_entry` and `create_matchset` stay disabled. |
-| `DESCRIPTION_TEMPLATE` | Entry description template with `{supplier}`, `{period}`, `{ref}`, `{short}` (default `{supplier}\|{period}\|{ref}\|{short}`). |
+| `DESCRIPTION_TEMPLATE` | Entry description template with `{date}`, `{supplier}`, `{period}`, `{ref}`, `{short}`; it contains `{supplier}` and `{ref}` or `{date}` (default `{date} {supplier} - {short} {period}`; the earlier default was `{supplier}\|{period}\|{ref}\|{short}`). |
 | `DESCRIPTION_MAX_LENGTH` | Longest rendered description (default 60). |
 | `DUPLICATE_WINDOW_DAYS` | Days around the invoice date in which the same supplier and gross amount count as a duplicate (default 7). |
 | `TIER_AUTO_MAX_EUR` | Auto tier: gross below this (default 250). |
